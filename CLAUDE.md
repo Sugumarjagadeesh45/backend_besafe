@@ -191,18 +191,37 @@ Socket.IO handles:
 - Driver-to-room joining (`driver_${driverId}`)
 
 **Key Socket Events:**
+
+**Ride Management:**
 - `newRideRequest` - Sent to drivers when ride is booked (filtered by vehicle type)
 - `newRideAvailable` - Alternative event name for ride notifications
 - `rideCompleted` - Sent to user when ride is completed
-- `driverLocationUpdate` - Driver sends location update (received by server)
-- `driverLiveLocationUpdate` - Broadcast to all users for nearby drivers map AND targeted to specific user for active rides
-- `driverNavigationUpdate` - Sent to user in active ride for polyline/route updates
+
+**Driver Location (Server receives from Driver App):**
+- `driverLocationUpdate` - Driver sends location update every 1 second (lat, lng, bearing, speed, status)
+- `driverLiveLocationUpdate` - Alternative driver location update event
+
+**Location Broadcasting (Server sends to User App):**
+- `driverLiveLocationUpdate` - Broadcast to ALL users for nearby drivers map
+- `driverLocationUpdate` - Targeted to specific user's room for active ride driver tracking (includes rideId, bearing, speed)
+- `driverNavigationUpdate` - Sent to user in active ride for polyline/route updates (includes coordinates, bearing)
+
+**User Events:**
+- `registerUser` - User registers with socket (userId, userMobile, rideId) - joins user room
+- `userRegistered` - Confirmation sent to user after registration
+- `requestDriverLocation` - User requests current driver location for active ride (rideId, userId)
+- `driverLocationNotFound` - Sent when requested driver location not available
 - `userLocationUpdate` - User sends location update during ride
 - `userLiveLocationUpdate` - Sent to driver during active ride with user's location
+
+**Working Hours:**
 - `workingHoursWarning` - Warning notifications (1/3, 2/3, 3/3)
 - `autoStopCompleted` - Driver forced offline due to expired working hours
+
+**Driver Status:**
 - `driverOffline` - Driver goes offline (emitted by driver app)
 - `driverOnline` - Driver goes online (emitted by driver app)
+- `registerDriver` - Driver registers with socket (driverId, driverName, lat, lng, vehicleType)
 
 **Socket Rooms:**
 - `driver_${driverId}` - Individual driver room for targeted messages
@@ -218,6 +237,50 @@ When a driver updates their location (`driverLocationUpdate` or `driverLiveLocat
    - `driverLocationUpdate` - Contains ride context and driver position
    - `driverNavigationUpdate` - For polyline/route drawing on map
 4. User app must listen to BOTH global broadcasts (nearby drivers) AND targeted room events (active ride navigation)
+
+**Console Logs for Debugging:**
+The backend now includes detailed console logs for every location update:
+
+Driver Location Update:
+```
+📍 ===== DRIVER LOCATION UPDATE =====
+   Driver ID: dri10001
+   Location: 37.774900, -122.419400
+   Status: onRide
+   Bearing: 45°
+   Speed: 25.5 km/h
+   Timestamp: 10:30:45 AM
+   ✅ Broadcasted globally to all users
+   🎯 ACTIVE RIDE FOUND: RIDE1704298800123
+   👤 Sending to User Room: 676a1234567890abcdef1234
+   ✅ Emitted 'driverLocationUpdate' to user 676a1234567890abcdef1234
+   ✅ Emitted 'driverNavigationUpdate' to user 676a1234567890abcdef1234
+   💾 Saved to database
+====================================
+```
+
+User Registration:
+```
+👤 ===== USER REGISTERED =====
+   User ID: 676a1234567890abcdef1234
+   Mobile: +1234567890
+   Ride ID: RIDE1704298800123
+   Socket ID: abc123xyz
+   Joined Room: 676a1234567890abcdef1234
+============================
+```
+
+User Requesting Driver Location:
+```
+🔍 ===== USER REQUESTING DRIVER LOCATION =====
+   User ID: 676a1234567890abcdef1234
+   Ride ID: RIDE1704298800123
+   Driver ID: dri10001
+   ✅ Driver found - sending location
+   Location: 37.774900, -122.419400
+   ✅ Location sent to user
+=============================================
+```
 
 ### Firebase Cloud Messaging (FCM)
 

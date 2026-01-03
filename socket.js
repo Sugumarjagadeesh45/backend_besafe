@@ -15,6 +15,7 @@ const rides = {};
 const activeDriverSockets = new Map();
 const processingRides = new Set();
 const userLocationTracking = new Map();
+const driverLocationIntervals = new Map(); // driverId -> intervalId
 
 // ✅ CRITICAL FIX: Deduplication map to prevent duplicate ride emissions
 const recentRideEmissions = new Map(); // rideId -> timestamp
@@ -424,14 +425,24 @@ const init = (server) => {
 
     socket.on("driverLocationUpdate", async (data) => {
       try {
-        const { driverId, latitude, longitude, status } = data;
+        const { driverId, latitude, longitude, status, bearing, speed } = data;
+        const timestamp = Date.now();
 
-        console.log(`📍 REAL-TIME: Driver ${driverId} location update received`);
+        // ✅ DETAILED CONSOLE LOG
+        console.log(`\n📍 ===== DRIVER LOCATION UPDATE =====`);
+        console.log(`   Driver ID: ${driverId}`);
+        console.log(`   Location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+        console.log(`   Status: ${status || "Live"}`);
+        console.log(`   Bearing: ${bearing || 0}°`);
+        console.log(`   Speed: ${speed ? (speed * 3.6).toFixed(1) + ' km/h' : 'N/A'}`);
+        console.log(`   Timestamp: ${new Date(timestamp).toLocaleTimeString()}`);
 
         if (activeDriverSockets.has(driverId)) {
           const driverData = activeDriverSockets.get(driverId);
           driverData.location = { latitude, longitude };
-          driverData.lastUpdate = Date.now();
+          driverData.bearing = bearing || 0;
+          driverData.speed = speed || 0;
+          driverData.lastUpdate = timestamp;
           driverData.status = status || "Live";
           driverData.isOnline = true;
           activeDriverSockets.set(driverId, driverData);
@@ -441,10 +452,13 @@ const init = (server) => {
             driverId: driverId,
             lat: latitude,
             lng: longitude,
+            bearing: bearing || 0,
+            speed: speed || 0,
             status: status || "Live",
             vehicleType: driverData.vehicleType,
-            timestamp: Date.now()
+            timestamp: timestamp
           });
+          console.log(`   ✅ Broadcasted globally to all users`);
 
           // ✅ NEW: Check if driver has an active ride and send location to that specific user
           const activeRide = await Ride.findOne({
@@ -454,7 +468,8 @@ const init = (server) => {
 
           if (activeRide && activeRide.user) {
             const userRoom = activeRide.user.toString();
-            console.log(`🎯 Sending driver location to user ${userRoom} for active ride ${activeRide.RAID_ID}`);
+            console.log(`   🎯 ACTIVE RIDE FOUND: ${activeRide.RAID_ID}`);
+            console.log(`   👤 Sending to User Room: ${userRoom}`);
 
             // Send targeted location update to user in active ride
             io.to(userRoom).emit("driverLocationUpdate", {
@@ -463,10 +478,13 @@ const init = (server) => {
               driverName: driverData.driverName,
               lat: latitude,
               lng: longitude,
+              bearing: bearing || 0,
+              speed: speed || 0,
               status: status || "Live",
               vehicleType: driverData.vehicleType,
-              timestamp: Date.now()
+              timestamp: timestamp
             });
+            console.log(`   ✅ Emitted 'driverLocationUpdate' to user ${userRoom}`);
 
             // Also send navigation-specific event for polyline updates
             io.to(userRoom).emit("driverNavigationUpdate", {
@@ -476,9 +494,15 @@ const init = (server) => {
                 latitude: latitude,
                 longitude: longitude
               },
-              timestamp: Date.now()
+              bearing: bearing || 0,
+              timestamp: timestamp
             });
+            console.log(`   ✅ Emitted 'driverNavigationUpdate' to user ${userRoom}`);
+          } else {
+            console.log(`   ℹ️  No active ride for this driver`);
           }
+        } else {
+          console.log(`   ⚠️  Driver ${driverId} not found in activeDriverSockets`);
         }
 
         const driverData = activeDriverSockets.get(driverId);
@@ -487,9 +511,11 @@ const init = (server) => {
           driverData?.driverName || "Unknown",
           latitude,
           longitude,
-          driverData.vehicleType,
+          driverData?.vehicleType || "taxi",
           status || "Live"
         );
+        console.log(`   💾 Saved to database`);
+        console.log(`====================================\n`);
 
       } catch (error) {
         console.error("❌ Error processing driver location update:", error);
@@ -561,12 +587,25 @@ const init = (server) => {
       }
     });
 
-    socket.on("driverLiveLocationUpdate", async ({ driverId, driverName, lat, lng }) => {
+    socket.on("driverLiveLocationUpdate", async ({ driverId, driverName, lat, lng, bearing, speed }) => {
       try {
+        const timestamp = Date.now();
+
+        // ✅ DETAILED CONSOLE LOG
+        console.log(`\n📍 ===== DRIVER LIVE LOCATION UPDATE =====`);
+        console.log(`   Driver ID: ${driverId}`);
+        console.log(`   Driver Name: ${driverName}`);
+        console.log(`   Location: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+        console.log(`   Bearing: ${bearing || 0}°`);
+        console.log(`   Speed: ${speed ? (speed * 3.6).toFixed(1) + ' km/h' : 'N/A'}`);
+        console.log(`   Timestamp: ${new Date(timestamp).toLocaleTimeString()}`);
+
         if (activeDriverSockets.has(driverId)) {
           const driverData = activeDriverSockets.get(driverId);
           driverData.location = { latitude: lat, longitude: lng };
-          driverData.lastUpdate = Date.now();
+          driverData.bearing = bearing || 0;
+          driverData.speed = speed || 0;
+          driverData.lastUpdate = timestamp;
           driverData.isOnline = true;
           activeDriverSockets.set(driverId, driverData);
 
@@ -577,10 +616,13 @@ const init = (server) => {
             driverId: driverId,
             lat: lat,
             lng: lng,
+            bearing: bearing || 0,
+            speed: speed || 0,
             status: driverData.status,
             vehicleType: driverData.vehicleType,
-            timestamp: Date.now()
+            timestamp: timestamp
           });
+          console.log(`   ✅ Broadcasted globally to all users`);
 
           // ✅ NEW: Check if driver has an active ride and send location to that specific user
           const activeRide = await Ride.findOne({
@@ -590,7 +632,8 @@ const init = (server) => {
 
           if (activeRide && activeRide.user) {
             const userRoom = activeRide.user.toString();
-            console.log(`🎯 Sending driver live location to user ${userRoom} for active ride ${activeRide.RAID_ID}`);
+            console.log(`   🎯 ACTIVE RIDE FOUND: ${activeRide.RAID_ID}`);
+            console.log(`   👤 Sending to User Room: ${userRoom}`);
 
             // Send targeted location update to user in active ride
             io.to(userRoom).emit("driverLocationUpdate", {
@@ -599,10 +642,13 @@ const init = (server) => {
               driverName: driverName || driverData.driverName,
               lat: lat,
               lng: lng,
+              bearing: bearing || 0,
+              speed: speed || 0,
               status: driverData.status,
               vehicleType: driverData.vehicleType,
-              timestamp: Date.now()
+              timestamp: timestamp
             });
+            console.log(`   ✅ Emitted 'driverLocationUpdate' to user ${userRoom}`);
 
             // Also send navigation-specific event for polyline updates
             io.to(userRoom).emit("driverNavigationUpdate", {
@@ -612,25 +658,113 @@ const init = (server) => {
                 latitude: lat,
                 longitude: lng
               },
-              timestamp: Date.now()
+              bearing: bearing || 0,
+              timestamp: timestamp
             });
+            console.log(`   ✅ Emitted 'driverNavigationUpdate' to user ${userRoom}`);
+          } else {
+            console.log(`   ℹ️  No active ride for this driver`);
           }
+        } else {
+          console.log(`   ⚠️  Driver ${driverId} not found in activeDriverSockets`);
         }
+        console.log(`=========================================\n`);
+
       } catch (error) {
         console.error("❌ Error updating driver location:", error);
       }
     });
 
-    socket.on('registerUser', ({ userId, userMobile }) => {
+    socket.on('registerUser', ({ userId, userMobile, rideId }) => {
       if (!userId) {
         console.error('❌ No userId provided for user registration');
         return;
       }
-     
+
       socket.userId = userId.toString();
-      socket.join(userId.toString());
-     
-      console.log(`👤 USER REGISTERED SUCCESSFULLY: ${userId}`);
+      const userRoom = userId.toString();
+      socket.join(userRoom);
+
+      console.log(`\n👤 ===== USER REGISTERED =====`);
+      console.log(`   User ID: ${userId}`);
+      console.log(`   Mobile: ${userMobile || 'N/A'}`);
+      console.log(`   Ride ID: ${rideId || 'No active ride'}`);
+      console.log(`   Socket ID: ${socket.id}`);
+      console.log(`   Joined Room: ${userRoom}`);
+      console.log(`============================\n`);
+
+      // Send confirmation to user
+      socket.emit('userRegistered', {
+        success: true,
+        userId: userId,
+        message: 'Connected to location tracking system',
+        timestamp: Date.now()
+      });
+    });
+
+    // ✅ NEW: User requests driver location for active ride
+    socket.on('requestDriverLocation', async ({ rideId, userId }) => {
+      try {
+        console.log(`\n🔍 ===== USER REQUESTING DRIVER LOCATION =====`);
+        console.log(`   User ID: ${userId}`);
+        console.log(`   Ride ID: ${rideId}`);
+
+        // Find the active ride
+        const ride = await Ride.findOne({
+          RAID_ID: rideId,
+          status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
+        });
+
+        if (!ride) {
+          console.log(`   ⚠️  No active ride found with ID: ${rideId}`);
+          socket.emit('driverLocationNotFound', {
+            rideId,
+            message: 'Ride not found or not active'
+          });
+          return;
+        }
+
+        const driverId = ride.driver;
+        console.log(`   Driver ID: ${driverId}`);
+
+        // Get driver location from active sockets
+        const driverData = activeDriverSockets.get(driverId);
+
+        if (driverData && driverData.location) {
+          console.log(`   ✅ Driver found - sending location`);
+          console.log(`   Location: ${driverData.location.latitude.toFixed(6)}, ${driverData.location.longitude.toFixed(6)}`);
+
+          // Send current driver location to user
+          socket.emit('driverLocationUpdate', {
+            rideId: rideId,
+            driverId: driverId,
+            driverName: driverData.driverName,
+            lat: driverData.location.latitude,
+            lng: driverData.location.longitude,
+            bearing: driverData.bearing || 0,
+            speed: driverData.speed || 0,
+            status: driverData.status,
+            vehicleType: driverData.vehicleType,
+            timestamp: Date.now()
+          });
+          console.log(`   ✅ Location sent to user`);
+        } else {
+          console.log(`   ⚠️  Driver ${driverId} not in active sockets`);
+          socket.emit('driverLocationNotFound', {
+            rideId,
+            driverId,
+            message: 'Driver location not available'
+          });
+        }
+        console.log(`=============================================\n`);
+
+      } catch (error) {
+        console.error('❌ Error fetching driver location:', error);
+        socket.emit('driverLocationError', {
+          rideId,
+          error: error.message
+        });
+      }
     });
 
     socket.on("registerDriver", async ({ driverId, driverName, latitude, longitude, vehicleType = "taxi" }) => {
