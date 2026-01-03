@@ -425,9 +425,9 @@ const init = (server) => {
     socket.on("driverLocationUpdate", async (data) => {
       try {
         const { driverId, latitude, longitude, status } = data;
-       
+
         console.log(`📍 REAL-TIME: Driver ${driverId} location update received`);
-       
+
         if (activeDriverSockets.has(driverId)) {
           const driverData = activeDriverSockets.get(driverId);
           driverData.location = { latitude, longitude };
@@ -435,28 +435,62 @@ const init = (server) => {
           driverData.status = status || "Live";
           driverData.isOnline = true;
           activeDriverSockets.set(driverId, driverData);
-          
-          // ✅ FIX: Use actual vehicle type instead of hardcoded "taxi"
+
+          // ✅ Broadcast to all users (for nearby drivers map)
           io.emit("driverLiveLocationUpdate", {
             driverId: driverId,
             lat: latitude,
             lng: longitude,
             status: status || "Live",
-            vehicleType: driverData.vehicleType, // ✅ Use actual vehicle type
+            vehicleType: driverData.vehicleType,
             timestamp: Date.now()
           });
+
+          // ✅ NEW: Check if driver has an active ride and send location to that specific user
+          const activeRide = await Ride.findOne({
+            driver: driverId,
+            status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
+          });
+
+          if (activeRide && activeRide.user) {
+            const userRoom = activeRide.user.toString();
+            console.log(`🎯 Sending driver location to user ${userRoom} for active ride ${activeRide.RAID_ID}`);
+
+            // Send targeted location update to user in active ride
+            io.to(userRoom).emit("driverLocationUpdate", {
+              rideId: activeRide.RAID_ID,
+              driverId: driverId,
+              driverName: driverData.driverName,
+              lat: latitude,
+              lng: longitude,
+              status: status || "Live",
+              vehicleType: driverData.vehicleType,
+              timestamp: Date.now()
+            });
+
+            // Also send navigation-specific event for polyline updates
+            io.to(userRoom).emit("driverNavigationUpdate", {
+              rideId: activeRide.RAID_ID,
+              driverId: driverId,
+              coordinates: {
+                latitude: latitude,
+                longitude: longitude
+              },
+              timestamp: Date.now()
+            });
+          }
         }
-       
+
         const driverData = activeDriverSockets.get(driverId);
         await saveDriverLocationToDB(
           driverId,
           driverData?.driverName || "Unknown",
           latitude,
           longitude,
-          driverData.vehicleType, // ✅ Use actual vehicle type
+          driverData.vehicleType,
           status || "Live"
         );
-       
+
       } catch (error) {
         console.error("❌ Error processing driver location update:", error);
       }
@@ -535,9 +569,10 @@ const init = (server) => {
           driverData.lastUpdate = Date.now();
           driverData.isOnline = true;
           activeDriverSockets.set(driverId, driverData);
-         
+
           await saveDriverLocationToDB(driverId, driverName, lat, lng, driverData.vehicleType);
-         
+
+          // ✅ Broadcast to all users (for nearby drivers map)
           io.emit("driverLiveLocationUpdate", {
             driverId: driverId,
             lat: lat,
@@ -546,6 +581,40 @@ const init = (server) => {
             vehicleType: driverData.vehicleType,
             timestamp: Date.now()
           });
+
+          // ✅ NEW: Check if driver has an active ride and send location to that specific user
+          const activeRide = await Ride.findOne({
+            driver: driverId,
+            status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
+          });
+
+          if (activeRide && activeRide.user) {
+            const userRoom = activeRide.user.toString();
+            console.log(`🎯 Sending driver live location to user ${userRoom} for active ride ${activeRide.RAID_ID}`);
+
+            // Send targeted location update to user in active ride
+            io.to(userRoom).emit("driverLocationUpdate", {
+              rideId: activeRide.RAID_ID,
+              driverId: driverId,
+              driverName: driverName || driverData.driverName,
+              lat: lat,
+              lng: lng,
+              status: driverData.status,
+              vehicleType: driverData.vehicleType,
+              timestamp: Date.now()
+            });
+
+            // Also send navigation-specific event for polyline updates
+            io.to(userRoom).emit("driverNavigationUpdate", {
+              rideId: activeRide.RAID_ID,
+              driverId: driverId,
+              coordinates: {
+                latitude: lat,
+                longitude: lng
+              },
+              timestamp: Date.now()
+            });
+          }
         }
       } catch (error) {
         console.error("❌ Error updating driver location:", error);

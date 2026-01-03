@@ -194,7 +194,11 @@ Socket.IO handles:
 - `newRideRequest` - Sent to drivers when ride is booked (filtered by vehicle type)
 - `newRideAvailable` - Alternative event name for ride notifications
 - `rideCompleted` - Sent to user when ride is completed
-- `locationUpdate` - Driver location updates
+- `driverLocationUpdate` - Driver sends location update (received by server)
+- `driverLiveLocationUpdate` - Broadcast to all users for nearby drivers map AND targeted to specific user for active rides
+- `driverNavigationUpdate` - Sent to user in active ride for polyline/route updates
+- `userLocationUpdate` - User sends location update during ride
+- `userLiveLocationUpdate` - Sent to driver during active ride with user's location
 - `workingHoursWarning` - Warning notifications (1/3, 2/3, 3/3)
 - `autoStopCompleted` - Driver forced offline due to expired working hours
 - `driverOffline` - Driver goes offline (emitted by driver app)
@@ -202,7 +206,18 @@ Socket.IO handles:
 
 **Socket Rooms:**
 - `driver_${driverId}` - Individual driver room for targeted messages
+- `${userId}` - User rooms (users join their own room on registration)
 - Drivers join their own room on connection
+- Users must call `registerUser` event with userId to join their room
+
+**IMPORTANT - Real-time Location Updates:**
+When a driver updates their location (`driverLocationUpdate` or `driverLiveLocationUpdate`):
+1. Location is broadcast globally via `driverLiveLocationUpdate` (for nearby drivers map)
+2. System checks if driver has an active ride (status: accepted/arrived/started/ongoing)
+3. If active ride exists, targeted updates are sent to that specific user's room:
+   - `driverLocationUpdate` - Contains ride context and driver position
+   - `driverNavigationUpdate` - For polyline/route drawing on map
+4. User app must listen to BOTH global broadcasts (nearby drivers) AND targeted room events (active ride navigation)
 
 ### Firebase Cloud Messaging (FCM)
 
