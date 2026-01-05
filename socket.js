@@ -259,7 +259,7 @@ async function generateSequentialRaidId() {
 
 async function saveDriverLocationToDB(driverId, driverName, latitude, longitude, vehicleType, status = "Live") {
   try {
-    const validStatuses = ["Live", "onRide", "offline"];
+    const validStatuses = ["Live", "onRide", "offline", "Offline", "Online"];
     const finalStatus = validStatuses.includes(status) ? status : "Live";
     
     const locationDoc = new DriverLocation({
@@ -303,8 +303,11 @@ function broadcastDriverLocationsToAllUsers() {
 
 const broadcastDriverLocationsContinuously = () => {
   setInterval(() => {
+    const now = Date.now();
     // ✅ REMOVE vehicle type filtering - broadcast ALL drivers
     const drivers = Array.from(activeDriverSockets.values())
+      // ✅ FIX: Only broadcast drivers who are Online AND have updated recently (e.g. < 60s)
+      .filter(driver => driver.isOnline && (now - driver.lastUpdate < 60000))
       .map(driver => ({
         driverId: driver.driverId,
         name: driver.driverName,
@@ -462,7 +465,7 @@ const init = (server) => {
 
           // ✅ NEW: Check if driver has an active ride and send location to that specific user
           const activeRide = await Ride.findOne({
-            driver: driverId,
+            driverId: driverId, // Ensure querying by String ID
             status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
           });
 
@@ -485,6 +488,7 @@ const init = (server) => {
               timestamp: timestamp
             });
             console.log(`   ✅ Emitted 'driverLocationUpdate' to user ${userRoom}`);
+            console.log(`user app locaation send successfully driver name:${driverData.driverName},location:lng:${longitude} lat:${latitude}`);
 
             // Also send navigation-specific event for polyline updates
             io.to(userRoom).emit("driverNavigationUpdate", {
@@ -626,7 +630,7 @@ const init = (server) => {
 
           // ✅ NEW: Check if driver has an active ride and send location to that specific user
           const activeRide = await Ride.findOne({
-            driver: driverId,
+            driverId: driverId, // Ensure querying by String ID
             status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
           });
 
@@ -649,6 +653,7 @@ const init = (server) => {
               timestamp: timestamp
             });
             console.log(`   ✅ Emitted 'driverLocationUpdate' to user ${userRoom}`);
+            console.log(`user app locaation send successfully driver name:${driverName || driverData.driverName},location:lng:${lng} lat:${lat}`);
 
             // Also send navigation-specific event for polyline updates
             io.to(userRoom).emit("driverNavigationUpdate", {
@@ -724,7 +729,7 @@ const init = (server) => {
           return;
         }
 
-        const driverId = ride.driver;
+        const driverId = ride.driverId || (ride.driver ? ride.driver.toString() : null);
         console.log(`   Driver ID: ${driverId}`);
 
         // Get driver location from active sockets
@@ -2273,9 +2278,28 @@ const init = (server) => {
   setInterval(() => {
     const now = Date.now();
     const fiveMinutesAgo = now - 300000;
+    const oneMinuteAgo = now - 60000; // ✅ NEW: 1 minute threshold for inactivity
     let cleanedCount = 0;
    
     Array.from(activeDriverSockets.entries()).forEach(([driverId, driver]) => {
+      // ✅ NEW: Check for inactive drivers (stale connection)
+      if (driver.isOnline && driver.lastUpdate < oneMinuteAgo) {
+        console.log(`⚠️ Driver ${driver.driverName} (${driverId}) inactive for >60s - Marking Offline`);
+        driver.isOnline = false;
+        driver.status = "Offline";
+        activeDriverSockets.set(driverId, driver);
+        
+        // Update DB to Offline
+        saveDriverLocationToDB(
+          driverId,
+          driver.driverName,
+          driver.location.latitude,
+          driver.location.longitude,
+          driver.vehicleType,
+          "Offline"
+        ).catch(console.error);
+      }
+
       if (!driver.isOnline && driver.lastUpdate < fiveMinutesAgo) {
         activeDriverSockets.delete(driverId);
         cleanedCount++;
