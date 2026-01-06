@@ -330,12 +330,19 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Earth's radius in km
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
+  const a =
     Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
     Math.sin(dLon/2) * Math.sin(dLon/2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   return R * c * 1000; // Return in meters
+}
+
+// Helper function to convert bearing to direction
+function getBearingDirection(bearing) {
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const index = Math.round(bearing / 45) % 8;
+  return directions[index];
 }
 
 // --- INIT FUNCTION ---
@@ -426,101 +433,41 @@ const init = (server) => {
       }
     });
 
+    // 2. Driver location update handler (continuous updates)
     socket.on("driverLocationUpdate", async (data) => {
       try {
-        const { driverId, latitude, longitude, status, bearing, speed } = data;
-        const timestamp = Date.now();
-
-        // ✅ DETAILED CONSOLE LOG
-        console.log(`\n📍 ===== DRIVER LOCATION UPDATE =====`);
-        console.log(`   Driver ID: ${driverId}`);
-        console.log(`   Location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-        console.log(`   Status: ${status || "Live"}`);
-        console.log(`   Bearing: ${bearing || 0}°`);
-        console.log(`   Speed: ${speed ? (speed * 3.6).toFixed(1) + ' km/h' : 'N/A'}`);
-        console.log(`   Timestamp: ${new Date(timestamp).toLocaleTimeString()}`);
-
+        const { driverId, latitude, longitude, status } = data;
+      
         if (activeDriverSockets.has(driverId)) {
           const driverData = activeDriverSockets.get(driverId);
           driverData.location = { latitude, longitude };
-          driverData.bearing = bearing || 0;
-          driverData.speed = speed || 0;
-          driverData.lastUpdate = timestamp;
+          driverData.lastUpdate = Date.now();
           driverData.status = status || "Live";
           driverData.isOnline = true;
           activeDriverSockets.set(driverId, driverData);
-
-          // ✅ Broadcast to all users (for nearby drivers map)
+          
+          // Emit live location update to all users
           io.emit("driverLiveLocationUpdate", {
             driverId: driverId,
             lat: latitude,
             lng: longitude,
-            bearing: bearing || 0,
-            speed: speed || 0,
             status: status || "Live",
             vehicleType: driverData.vehicleType,
-            timestamp: timestamp
+            timestamp: Date.now()
           });
-          console.log(`   ✅ Broadcasted globally to all users`);
-
-          // ✅ NEW: Check if driver has an active ride and send location to that specific user
-          const activeRide = await Ride.findOne({
-            driverId: driverId, // Ensure querying by String ID
-            status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
-          });
-
-          if (activeRide && activeRide.user) {
-            const userRoom = activeRide.user.toString();
-            console.log(`   🎯 ACTIVE RIDE FOUND: ${activeRide.RAID_ID}`);
-            console.log(`   👤 Sending to User Room: ${userRoom}`);
-
-            // Send targeted location update to user in active ride
-            io.to(userRoom).emit("driverLocationUpdate", {
-              rideId: activeRide.RAID_ID,
-              driverId: driverId,
-              driverName: driverData.driverName,
-              lat: latitude,
-              lng: longitude,
-              bearing: bearing || 0,
-              speed: speed || 0,
-              status: status || "Live",
-              vehicleType: driverData.vehicleType,
-              timestamp: timestamp
-            });
-            console.log(`   ✅ Emitted 'driverLocationUpdate' to user ${userRoom}`);
-            console.log(`user app locaation send successfully driver name:${driverData.driverName},location:lng:${longitude} lat:${latitude}`);
-
-            // Also send navigation-specific event for polyline updates
-            io.to(userRoom).emit("driverNavigationUpdate", {
-              rideId: activeRide.RAID_ID,
-              driverId: driverId,
-              coordinates: {
-                latitude: latitude,
-                longitude: longitude
-              },
-              bearing: bearing || 0,
-              timestamp: timestamp
-            });
-            console.log(`   ✅ Emitted 'driverNavigationUpdate' to user ${userRoom}`);
-          } else {
-            console.log(`   ℹ️  No active ride for this driver`);
-          }
-        } else {
-          console.log(`   ⚠️  Driver ${driverId} not found in activeDriverSockets`);
         }
-
+      
+        // Save to database
         const driverData = activeDriverSockets.get(driverId);
         await saveDriverLocationToDB(
           driverId,
           driverData?.driverName || "Unknown",
           latitude,
           longitude,
-          driverData?.vehicleType || "taxi",
+          driverData.vehicleType,
           status || "Live"
         );
-        console.log(`   💾 Saved to database`);
-        console.log(`====================================\n`);
-
+      
       } catch (error) {
         console.error("❌ Error processing driver location update:", error);
       }
@@ -591,90 +538,28 @@ const init = (server) => {
       }
     });
 
-    socket.on("driverLiveLocationUpdate", async ({ driverId, driverName, lat, lng, bearing, speed }) => {
+    // 3. Alternative driver live location update handler
+    socket.on("driverLiveLocationUpdate", async ({ driverId, driverName, lat, lng }) => {
       try {
-        const timestamp = Date.now();
-
-        // ✅ DETAILED CONSOLE LOG
-        console.log(`\n📍 ===== DRIVER LIVE LOCATION UPDATE =====`);
-        console.log(`   Driver ID: ${driverId}`);
-        console.log(`   Driver Name: ${driverName}`);
-        console.log(`   Location: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
-        console.log(`   Bearing: ${bearing || 0}°`);
-        console.log(`   Speed: ${speed ? (speed * 3.6).toFixed(1) + ' km/h' : 'N/A'}`);
-        console.log(`   Timestamp: ${new Date(timestamp).toLocaleTimeString()}`);
-
         if (activeDriverSockets.has(driverId)) {
           const driverData = activeDriverSockets.get(driverId);
           driverData.location = { latitude: lat, longitude: lng };
-          driverData.bearing = bearing || 0;
-          driverData.speed = speed || 0;
-          driverData.lastUpdate = timestamp;
+          driverData.lastUpdate = Date.now();
           driverData.isOnline = true;
           activeDriverSockets.set(driverId, driverData);
-
+        
           await saveDriverLocationToDB(driverId, driverName, lat, lng, driverData.vehicleType);
-
-          // ✅ Broadcast to all users (for nearby drivers map)
+        
+          // Emit live location update to all users
           io.emit("driverLiveLocationUpdate", {
             driverId: driverId,
             lat: lat,
             lng: lng,
-            bearing: bearing || 0,
-            speed: speed || 0,
             status: driverData.status,
             vehicleType: driverData.vehicleType,
-            timestamp: timestamp
+            timestamp: Date.now()
           });
-          console.log(`   ✅ Broadcasted globally to all users`);
-
-          // ✅ NEW: Check if driver has an active ride and send location to that specific user
-          const activeRide = await Ride.findOne({
-            driverId: driverId, // Ensure querying by String ID
-            status: { $in: ['accepted', 'arrived', 'started', 'ongoing'] }
-          });
-
-          if (activeRide && activeRide.user) {
-            const userRoom = activeRide.user.toString();
-            console.log(`   🎯 ACTIVE RIDE FOUND: ${activeRide.RAID_ID}`);
-            console.log(`   👤 Sending to User Room: ${userRoom}`);
-
-            // Send targeted location update to user in active ride
-            io.to(userRoom).emit("driverLocationUpdate", {
-              rideId: activeRide.RAID_ID,
-              driverId: driverId,
-              driverName: driverName || driverData.driverName,
-              lat: lat,
-              lng: lng,
-              bearing: bearing || 0,
-              speed: speed || 0,
-              status: driverData.status,
-              vehicleType: driverData.vehicleType,
-              timestamp: timestamp
-            });
-            console.log(`   ✅ Emitted 'driverLocationUpdate' to user ${userRoom}`);
-            console.log(`user app locaation send successfully driver name:${driverName || driverData.driverName},location:lng:${lng} lat:${lat}`);
-
-            // Also send navigation-specific event for polyline updates
-            io.to(userRoom).emit("driverNavigationUpdate", {
-              rideId: activeRide.RAID_ID,
-              driverId: driverId,
-              coordinates: {
-                latitude: lat,
-                longitude: lng
-              },
-              bearing: bearing || 0,
-              timestamp: timestamp
-            });
-            console.log(`   ✅ Emitted 'driverNavigationUpdate' to user ${userRoom}`);
-          } else {
-            console.log(`   ℹ️  No active ride for this driver`);
-          }
-        } else {
-          console.log(`   ⚠️  Driver ${driverId} not found in activeDriverSockets`);
         }
-        console.log(`=========================================\n`);
-
       } catch (error) {
         console.error("❌ Error updating driver location:", error);
       }
@@ -803,7 +688,18 @@ const init = (server) => {
           lastUpdate: Date.now(),
           isOnline: true
         });
-
+        // ✅ Update database with Live status
+        const driverUpdate = {
+          driverId,
+          name: driverName,
+          vehicleType: normalizedVehicleType,
+          status: 'Live', // ✅ Changed from 'offline' to 'Live'
+          lastUpdate: new Date(),
+          location: {
+            type: 'Point',
+            coordinates: [longitude, latitude]
+          }
+        };
         // ✅ CRITICAL FIX: Join vehicle-specific room for targeted ride requests
         const vehicleRoom = `drivers_${actualVehicleType}`;
         socket.join(vehicleRoom);
@@ -1478,57 +1374,35 @@ const init = (server) => {
           await session.commitTransaction();
           console.log(`✅ Ride ${rideId} accepted successfully by ${driverId}`);
 
-          // ---------------------------------------------------------
-          // ✅ CRITICAL FIX: GET DRIVER LIVE LOCATION & DETAILS BEFORE EMITTING
-          // ---------------------------------------------------------
+          // Get driver's current location
           let currentDriverLat = 0;
           let currentDriverLng = 0;
-          let currentVehicleType = "taxi"; // ✅ Lowercase default
-          let driverPhone = "N/A";
-          let driverVehicleNumber = "";
-          let driverRating = 0;
-          let driverPhoto = "";
+          let currentVehicleType = "TAXI";
 
-          // 1. Fetch Driver Details from DB (Phone, Vehicle Number, Rating)
-          try {
-            const dbDriver = await Driver.findOne({ driverId });
-            if (dbDriver) {
-               driverPhone = dbDriver.phone || dbDriver.phoneNumber || "N/A";
-               driverVehicleNumber = dbDriver.vehicleNumber || "";
-               driverRating = dbDriver.rating || 0;
-               driverPhoto = dbDriver.profilePicture || "";
-               currentVehicleType = dbDriver.vehicleType || "taxi";
-               
-               // Get DB location as fallback
-               if (dbDriver.location && dbDriver.location.coordinates) {
-                  currentDriverLng = dbDriver.location.coordinates[0];
-                  currentDriverLat = dbDriver.location.coordinates[1];
-               }
-            }
-          } catch (err) {
-             console.error(`❌ Error fetching driver details:`, err);
-          }
-
-          // 2. Try to get from active memory (Fastest & Most Accurate Location)
+          // Get from active memory (Fastest & Most Accurate)
           if (activeDriverSockets.has(driverId)) {
             const liveDriver = activeDriverSockets.get(driverId);
             if (liveDriver.location) {
               currentDriverLat = liveDriver.location.latitude;
               currentDriverLng = liveDriver.location.longitude;
-              // Use memory vehicle type if available
-              if (liveDriver.vehicleType) {
-                 currentVehicleType = liveDriver.vehicleType;
-              }
-              console.log(`📍 Live location found in memory: ${currentDriverLat}, ${currentDriverLng}`);
+              currentVehicleType = liveDriver.vehicleType;
             }
           }
 
-          console.log(`📤 Sending Ride Accepted: Driver ${driverName}, Phone: ${driverPhone}`);
+          // If not in memory, try DB
+          if (currentDriverLat === 0) {
+            const dbDriver = await Driver.findOne({ driverId });
+            if (dbDriver) {
+              currentVehicleType = dbDriver.vehicleType || "TAXI";
+              if (dbDriver.location && dbDriver.location.coordinates) {
+                currentDriverLng = dbDriver.location.coordinates[0];
+                currentDriverLat = dbDriver.location.coordinates[1];
+              }
+            }
+          }
           
-          // Emit events after successful transaction
+          // Send coordinates to User App
           const userRoom = ride.user.toString();
-
-          // ✅ Send coordinates to User App so icon appears at REAL location, not pickup
           io.to(userRoom).emit("rideAccepted", {
             success: true,
             rideId: rideId,
@@ -1537,11 +1411,6 @@ const init = (server) => {
             driverLat: currentDriverLat,
             driverLng: currentDriverLng,
             vehicleType: currentVehicleType,
-            driverPhone: driverPhone, // ✅ Added Phone Number
-            driverMobile: driverPhone, // ✅ Added for frontend compatibility
-            driverVehicleNumber: driverVehicleNumber, // ✅ Added Vehicle Number
-            driverRating: driverRating, // ✅ Added Rating
-            driverPhoto: driverPhoto, // ✅ Added Driver Photo
             message: "Ride accepted successfully"
           });
 
