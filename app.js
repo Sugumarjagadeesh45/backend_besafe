@@ -661,7 +661,7 @@ app.post('/api/rides/book-ride-strict', async (req, res) => {
 
     // Validate vehicle type
     const validVehicleTypes = ['PORT', 'TAXI', 'BIKE'];
-    if (!validVehicleTypes.includes(vehicleType.toUpperCase())) {
+    if (!validVehicleTypes.includes(vehicleType.toUpperCase())) { // Check validity using upper, but use lower for logic
       return res.status(400).json({
         success: false,
         error: `Invalid vehicle type. Must be one of: ${validVehicleTypes.join(', ')}`
@@ -690,7 +690,7 @@ app.post('/api/rides/book-ride-strict', async (req, res) => {
       },
       pickupAddress,
       dropoffAddress,
-      vehicleType: vehicleType.toUpperCase(), // Store as uppercase
+      vehicleType: vehicleType.toLowerCase(), // ✅ Store as lowercase per requirements
       paymentMethod,
       estimatedFare,
       status: 'searching',
@@ -703,7 +703,7 @@ app.post('/api/rides/book-ride-strict', async (req, res) => {
     // ✅ CRITICAL: Find ONLY drivers with matching vehicle type
     const matchingDrivers = await Driver.find({
       status: 'Live',
-      vehicleType: vehicleType.toUpperCase(), // Exact match
+      vehicleType: vehicleType.toLowerCase(), // ✅ Exact match (lowercase)
       fcmToken: { $exists: true, $ne: '' },
       notificationEnabled: true
     })
@@ -2355,4 +2355,3 @@ app.use((err, req, res, next) => {
 
 // ✅ EXPORT
 module.exports = app;
-
