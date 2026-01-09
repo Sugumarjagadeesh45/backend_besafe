@@ -1807,6 +1807,7 @@ socket.on("acceptRide", async (data, callback) => {
           timestamp: new Date().toISOString()
         });
 
+        
         io.to(userRoom).emit("otpVerified", {
           rideId: rideId,
           driverId: driverId,
