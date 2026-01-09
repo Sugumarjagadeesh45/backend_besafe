@@ -1344,169 +1344,180 @@ const init = (server) => {
       }
     });
 
-    socket.on("acceptRide", async (data, callback) => {
-      try {
-        const { rideId, driverId, driverName } = data;
 
-        console.log(`\n✅ ACCEPT RIDE REQUEST: ${rideId} by driver ${driverId}`);
-
-        // Add transaction to prevent race conditions and multiple clicks
-        const session = await mongoose.startSession();
-        session.startTransaction();
-
-        try {
-          // Use findOneAndUpdate with atomic operation to prevent duplicate accepts
-          const ride = await Ride.findOneAndUpdate(
-            {
-              RAID_ID: rideId,
-              status: { $in: ["pending", "searching"] }  // ✅ Accept if pending OR searching
-            },
-            {
-              $set: {
-                status: "accepted",
-                driverId: driverId,
-                driverName: driverName,
-                acceptedAt: new Date()
-              }
-            },
-            {
-              new: true,
-              session: session
-            }
-          );
-
-          if (!ride) {
-            await session.abortTransaction();
-            console.log(`❌ Ride ${rideId} not found or already accepted`);
-            return callback({
-              success: false,
-              message: `Ride is no longer available. Another driver may have accepted it.`
-            });
-          }
-
-          await session.commitTransaction();
-          console.log(`✅ Ride ${rideId} accepted successfully by ${driverId}`);
-
-          // ✅ UPDATE IN-MEMORY RIDE STATE
-          if (rides[rideId]) {
-            rides[rideId].status = "accepted";
-            rides[rideId].driverId = driverId;
-            rides[rideId].driverName = driverName;
-            rides[rideId].acceptedAt = new Date();
-          }
-
-          // Get driver's current location
-          let currentDriverLat = 0;
-          let currentDriverLng = 0;
-          let currentVehicleType = "TAXI";
-          let driverPhone = "";
-          let driverVehicleNumber = "";
-          let driverRating = "5.0";
-
-          // Get from active memory (Fastest & Most Accurate)
-          if (activeDriverSockets.has(driverId)) {
-            const liveDriver = activeDriverSockets.get(driverId);
-            if (liveDriver.location) {
-              currentDriverLat = liveDriver.location.latitude;
-              currentDriverLng = liveDriver.location.longitude;
-              currentVehicleType = liveDriver.vehicleType;
-            }
-          }
-
-          const dbDriver = await Driver.findOne({ driverId });
-
-if (dbDriver) {
-  driverPhone = dbDriver.phone || "";
-  driverVehicleNumber = dbDriver.vehicleNumber || "";
-  driverRating = dbDriver.rating || "5.0";
-  currentVehicleType = dbDriver.vehicleType || "TAXI";
-
-  if (dbDriver.location?.coordinates?.length === 2) {
-    currentDriverLng = dbDriver.location.coordinates[0];
-    currentDriverLat = dbDriver.location.coordinates[1];
-  }
-}
-
-// ✅ ALWAYS emit to user (outside if)
-const userRoom = ride.user.toString();
-
-io.to(userRoom).emit("rideAccepted", {
-  success: true,
-  rideId,
-  driverId,
-  driverName,
-  driverLat: currentDriverLat,
-  driverLng: currentDriverLng,
-  vehicleType: currentVehicleType,
-  driverPhone,              // ✅ NOW ALWAYS SENT
-  driverVehicleNumber,
-  driverRating,
-  message: "Ride accepted successfully"
+    
+socket.on("joinRideRoom", (data) => {
+  const { rideId } = data;
+  socket.join(rideId);
+  console.log(`User ${socket.id} joined ride room: ${rideId}`);
 });
 
 
-          
-          // ✅ Notify ALL OTHER DRIVERS that this ride is no longer available
-          const vehicleRoom = `drivers_${currentVehicleType}`;
-          socket.to(vehicleRoom).emit("rideAlreadyAccepted", {
-            rideId: rideId,
+
+socket.on("acceptRide", async (data, callback) => {
+  try {
+    const { rideId, driverId, driverName, driverLat, driverLng, vehicleType } = data;
+
+    console.log(`\n✅ ACCEPT RIDE REQUEST: ${rideId} by driver ${driverId}`);
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Find ride with user populated
+      const ride = await Ride.findOne({
+        RAID_ID: rideId,
+        status: { $in: ["pending", "searching"] }
+      }).populate('user').session(session);
+
+      if (!ride) {
+        await session.abortTransaction();
+        console.log(`❌ Ride ${rideId} not found or already accepted`);
+        return callback({
+          success: false,
+          message: `Ride is no longer available. Another driver may have accepted it.`
+        });
+      }
+
+      // Update ride status
+      const updatedRide = await Ride.findOneAndUpdate(
+        {
+          RAID_ID: rideId,
+          status: { $in: ["pending", "searching"] }
+        },
+        {
+          $set: {
+            status: "accepted",
             driverId: driverId,
             driverName: driverName,
-            message: `Ride ${rideId} has been accepted by another driver`,
-            timestamp: new Date().toISOString()
-          });
-
-          console.log(`📢 Notified other ${currentVehicleType} drivers that ride ${rideId} was accepted`);
-
-          // ✅ Send success callback to accepting driver with COMPLETE ride data
-          if (callback) {
-            callback({
-              success: true,
-              message: "Ride accepted successfully",
-              rideId: rideId,
-              status: "accepted",
-              // ✅ CRITICAL: Include ALL ride details for driver app
-              ride: {
-                RAID_ID: ride.RAID_ID,
-                pickup: ride.pickup || {},
-                drop: ride.drop || {},
-                fare: ride.fare || 0,
-                distance: ride.distance || 0,
-                userName: ride.userName || "Customer",
-                userMobile: ride.userMobile || "",
-                otp: ride.otp || "0000",
-                vehicleType: ride.vehicleType || currentVehicleType,
-                status: "accepted",
-                driverId: driverId,
-                driverName: driverName
-              },
-              // Also include pickup/drop at top level for backward compatibility
-              pickup: ride.pickup || {},
-              drop: ride.drop || {},
-              fare: ride.fare || 0,
-              otp: ride.otp || "0000"
-            });
+            acceptedAt: new Date(),
+            driverLocation: {
+              lat: driverLat,
+              lng: driverLng
+            }
           }
-
-        } catch (error) {
-          await session.abortTransaction();
-          console.error(`❌ Error accepting ride ${rideId}:`, error);
-          if (callback) {
-            callback({
-              success: false,
-              message: "Failed to accept ride",
-              error: error.message
-            });
-          }
-          throw error;
-        } finally {
-          session.endSession();
+        },
+        {
+          new: true,
+          session: session
         }
-      } catch (error) {
-        console.error(`❌ ERROR ACCEPTING RIDE:`, error);
-        callback({ success: false, message: error.message });
+      ).populate('user');
+
+      await session.commitTransaction();
+      console.log(`✅ Ride ${rideId} accepted successfully by ${driverId}`);
+
+      // Get driver details from database
+      const driver = await Driver.findOne({ driverId: driverId });
+      
+      // Prepare complete response data
+      const responseData = {
+        success: true,
+        message: "Ride accepted successfully",
+        rideId: rideId,
+        status: "accepted",
+        // Complete ride data
+        ride: {
+          RAID_ID: updatedRide.RAID_ID,
+          rideId: updatedRide.RAID_ID,
+          pickup: updatedRide.pickup || {},
+          drop: updatedRide.drop || {},
+          fare: updatedRide.fare || 0,
+          distance: updatedRide.distance || 0,
+          userName: updatedRide.name || "Customer",
+          userMobile: updatedRide.userMobile || "",
+          otp: updatedRide.otp || "0000",
+          vehicleType: updatedRide.rideType || "taxi",
+          status: "accepted",
+          driverId: driverId,
+          driverName: driverName
+        },
+        // User data for UI
+        userData: {
+          name: updatedRide.name || "Customer",
+          mobile: updatedRide.userMobile || "",
+          location: {
+            latitude: updatedRide.pickup?.lat || 0,
+            longitude: updatedRide.pickup?.lng || 0
+          },
+          userId: updatedRide.user?._id || null,
+          rating: 4.8
+        },
+        // Additional info
+        userId: updatedRide.user?._id,
+        pickup: updatedRide.pickup,
+        driverPhone: driver?.phoneNumber || "",
+        driverVehicleNumber: driver?.vehicleNumber || "",
+        driverRating: driver?.rating || "5.0"
+      };
+
+      console.log(`📤 Sending complete data to driver:`, {
+        userName: updatedRide.name,
+        userMobile: updatedRide.userMobile,
+        rideId: updatedRide.RAID_ID
+      });
+
+      // ✅ CRITICAL: Send callback to driver with ALL data
+      if (callback) {
+        callback(responseData);
       }
-    });
+
+      // ✅ CRITICAL: Notify user immediately via their room
+      const userId = updatedRide.user?._id?.toString();
+      if (userId) {
+        const userRoom = userId.toString();
+        console.log(`📡 Emitting to user room: ${userRoom}`);
+        
+        io.to(userRoom).emit("rideAccepted", {
+          success: true,
+          rideId: rideId,
+          driverId: driverId,
+          driverName: driverName,
+          driverLat: driverLat,
+          driverLng: driverLng,
+          driverPhone: driver?.phoneNumber || "",
+          driverVehicleNumber: driver?.vehicleNumber || "",
+          driverRating: driver?.rating || "5.0",
+          vehicleType: vehicleType || updatedRide.rideType,
+          message: "Your ride has been accepted by a driver",
+          timestamp: new Date().toISOString()
+        });
+
+        // Also join driver to user's room for direct communication
+        socket.join(userRoom);
+        console.log(`👥 Driver ${driverId} joined user room: ${userRoom}`);
+      }
+
+      // ✅ Notify other drivers that ride is taken
+      const vehicleRoom = `drivers_${(updatedRide.rideType || 'taxi').toLowerCase()}`;
+      socket.to(vehicleRoom).emit("rideAlreadyAccepted", {
+        rideId: rideId,
+        driverId: driverId,
+        driverName: driverName,
+        message: `Ride ${rideId} has been accepted by another driver`,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`✅ Ride ${rideId} accepted and user notified`);
+
+    } catch (error) {
+      await session.abortTransaction();
+      console.error(`❌ Error accepting ride ${rideId}:`, error);
+      if (callback) {
+        callback({
+          success: false,
+          message: "Failed to accept ride",
+          error: error.message
+        });
+      }
+      throw error;
+    } finally {
+      session.endSession();
+    }
+  } catch (error) {
+    console.error(`❌ ERROR ACCEPTING RIDE:`, error);
+    callback({ success: false, message: error.message });
+  }
+});
 
     socket.on("userLocationUpdate", async (data) => {
       try {
@@ -1655,6 +1666,11 @@ io.to(userRoom).emit("rideAccepted", {
        
         console.log(`👤 Driver requested user data for ride: ${rideId}`);
        
+         const driverRoom = `driver_${driverId}`;
+    io.to(driverRoom).emit("driverDataResponse", userData);
+    io.to(rideId).emit("driverDataResponse", userData);
+
+
         const ride = await Ride.findOne({ RAID_ID: rideId }).populate('user');
         if (!ride) {
           if (typeof callback === "function") {
@@ -2076,6 +2092,7 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 
 
 
+
 // const { Server } = require("socket.io");
 // const DriverLocation = require("./models/DriverLocation");
 // const Driver = require("./models/driver/driver");
@@ -2337,8 +2354,9 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 
 // async function saveDriverLocationToDB(driverId, driverName, latitude, longitude, vehicleType, status = "Live") {
 //   try {
-//     const validStatuses = ["Live", "onRide", "offline", "Offline", "Online"];
-//     const finalStatus = validStatuses.includes(status) ? status : "Live";
+//     // ✅ FIX: Normalize status for DriverLocation enum (Offline -> offline)
+//     let finalStatus = status;
+//     if (status === "Offline") finalStatus = "offline";
     
 //     const locationDoc = new DriverLocation({
 //       driverId,
@@ -2537,14 +2555,17 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
       
 //         // Save to database
 //         const driverData = activeDriverSockets.get(driverId);
-//         await saveDriverLocationToDB(
-//           driverId,
-//           driverData?.driverName || "Unknown",
-//           latitude,
-//           longitude,
-//           driverData.vehicleType,
-//           status || "Live"
-//         );
+//         // ✅ FIX: Check if driverData exists before accessing properties
+//         if (driverData) {
+//           await saveDriverLocationToDB(
+//             driverId,
+//             driverData.driverName || "Unknown",
+//             latitude,
+//             longitude,
+//             driverData.vehicleType,
+//             status || "Live"
+//           );
+//         }
       
 //       } catch (error) {
 //         console.error("❌ Error processing driver location update:", error);
@@ -2673,9 +2694,9 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //     // ✅ NEW: User requests driver location for active ride
 //     socket.on('requestDriverLocation', async ({ rideId, userId }) => {
 //       try {
-//         console.log(`\n🔍 ===== USER REQUESTING DRIVER LOCATION =====`);
-//         console.log(`   User ID: ${userId}`);
-//         console.log(`   Ride ID: ${rideId}`);
+//         // console.log(`\n🔍 ===== USER REQUESTING DRIVER LOCATION =====`);
+//         // console.log(`   User ID: ${userId}`);
+//         // console.log(`   Ride ID: ${rideId}`);
 
 //         // Find the active ride
 //         const ride = await Ride.findOne({
@@ -2684,7 +2705,7 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //         });
 
 //         if (!ride) {
-//           console.log(`   ⚠️  No active ride found with ID: ${rideId}`);
+//           // console.log(`   ⚠️  No active ride found with ID: ${rideId}`);
 //           socket.emit('driverLocationNotFound', {
 //             rideId,
 //             message: 'Ride not found or not active'
@@ -2868,150 +2889,159 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //       }
 //     });
 
-    
 //     socket.on("driverCompletedRide", async (data, callback) => {
-//   try {
-//     const { rideId, driverId, distance, fare, actualPickup, actualDrop } = data;
-    
-//     console.log(`🏁 Processing ride completion for: ${rideId}`);
-    
-//     // Update ride in database
-//     const ride = await Ride.findOne({ RAID_ID: rideId });
-//     if (!ride) {
-//       console.error(`❌ Ride ${rideId} not found`);
-//       return callback?.({ 
-//         success: false, 
-//         message: "Ride not found" 
-//       });
-//     }
-    
-//     // ✅ STRICT FARE CALCULATION (Backend Verification)
-//     const vehicleType = (ride.rideType || ride.vehicleType || 'taxi').toLowerCase();
-//     const distanceKm = parseFloat(distance) || 0;
-    
-//     let pricePerKm = 0;
-//     try {
-//         const currentPrices = ridePriceController.getCurrentPrices();
-//         console.log(`💰 Admin Prices for Calculation:`, currentPrices);
-//         pricePerKm = currentPrices[vehicleType] || 0;
-//     } catch (e) {
-//         console.error("Error getting prices for calculation:", e);
-//     }
-
-//     // Fallback prices if 0
-//     if (!pricePerKm) {
-//         pricePerKm = vehicleType === 'bike' ? 15 :
-//                      vehicleType === 'taxi' ? 40 : 75;
-//     }
-
-//     // Final Fare = Distance * Price (No extra charges)
-//     const calculatedFare = Math.round(distanceKm * pricePerKm);
-    
-//     console.log(`💰 FARE CALCULATION: ${distanceKm}km * ₹${pricePerKm} = ₹${calculatedFare}`);
-//     console.log(`   (Frontend sent: ₹${fare})`);
-    
-//     const finalFare = calculatedFare;
-
-//     // Update ride status with VERIFIED fare
-//     ride.status = 'completed';
-//     ride.completedAt = new Date();
-//     ride.actualDistance = distance;
-//     ride.actualFare = finalFare; // ✅ Use verified fare
-//     ride.actualPickup = actualPickup;
-//     ride.actualDrop = actualDrop;
-//     await ride.save();
-    
-//     // ✅ Update driver status to Live AND Credit Wallet
-//     await Driver.findOneAndUpdate(
-//       { driverId: driverId },
-//       {
-//         status: 'Live',
-//         lastUpdate: new Date(),
-//         $inc: { wallet: parseFloat(finalFare) || 0 } // 💰 Credit verified fare
-//       }
-//     );
-
-//     // Get user ID from ride
-//     const userId = ride.user?.toString() || ride.userId;
-    
-//     // ✅ UPDATE USER WALLET & NOTIFY
-//     if (userId) {
 //       try {
-//         const user = await Registration.findById(userId);
-//         if (user) {
-//           // Emit real-time wallet update to user so UI updates immediately
-//           io.to(userId).emit("walletUpdate", {
-//             balance: user.wallet || 0,
-//             wallet: user.wallet || 0
+//         const { rideId, driverId, distance, fare, actualPickup, actualDrop } = data;
+        
+//         console.log(`🏁 Processing ride completion for: ${rideId}`);
+        
+//         // Update ride in database
+//         const ride = await Ride.findOne({ RAID_ID: rideId });
+//         if (!ride) {
+//           console.error(`❌ Ride ${rideId} not found`);
+//           return callback?.({ 
+//             success: false, 
+//             message: "Ride not found" 
 //           });
 //         }
-//       } catch (walletError) {
-//         console.error("❌ Error syncing wallet in socket:", walletError);
+        
+//         // ✅ STRICT FARE CALCULATION (Backend Verification)
+//         const vehicleType = (ride.rideType || ride.vehicleType || 'taxi').toLowerCase();
+//         const distanceKm = parseFloat(distance) || 0;
+        
+//         let pricePerKm = 0;
+//         try {
+//             const currentPrices = ridePriceController.getCurrentPrices();
+//             console.log(`💰 Admin Prices for Calculation:`, currentPrices);
+//             pricePerKm = currentPrices[vehicleType] || 0;
+//         } catch (e) {
+//             console.error("Error getting prices for calculation:", e);
+//         }
+
+//         // Fallback prices if 0
+//         if (!pricePerKm) {
+//             pricePerKm = vehicleType === 'bike' ? 15 :
+//                          vehicleType === 'taxi' ? 40 : 75;
+//         }
+
+//         // Final Fare = Distance * Price (No extra charges)
+//         const calculatedFare = Math.round(distanceKm * pricePerKm);
+        
+//         console.log(`💰 FARE CALCULATION: ${distanceKm}km * ₹${pricePerKm} = ₹${calculatedFare}`);
+//         console.log(`   (Frontend sent: ₹${fare})`);
+        
+//         const finalFare = calculatedFare;
+
+//         // Update ride status with VERIFIED fare
+//         ride.status = 'completed';
+//         ride.completedAt = new Date();
+//         ride.actualDistance = distance;
+//         ride.actualFare = finalFare; // ✅ Use verified fare
+//         ride.actualPickup = actualPickup;
+//         ride.actualDrop = actualDrop;
+//         await ride.save();
+        
+//         // ✅ Update driver status to Live AND Credit Wallet
+//         const updatedDriver = await Driver.findOneAndUpdate(
+//           { driverId: driverId },
+//           {
+//             status: 'Live',
+//             lastUpdate: new Date(),
+//             $inc: { wallet: parseFloat(finalFare) || 0 } // 💰 Credit verified fare
+//           },
+//           { new: true } // ✅ Return updated document to get new balance
+//         );
+
+//         // Get user ID from ride
+//         const userId = ride.user?.toString() || ride.userId;
+        
+//         // ✅ UPDATE USER WALLET & NOTIFY
+//         if (userId) {
+//           try {
+//             const user = await Registration.findById(userId);
+//             if (user) {
+//               // ✅ DEDUCT FROM USER WALLET IF PAYMENT METHOD IS 'WALLET'
+//               if (ride.paymentMethod && ride.paymentMethod.toLowerCase() === 'wallet') {
+//                  const deduction = parseFloat(finalFare) || 0;
+//                  user.wallet = (user.wallet || 0) - deduction;
+//                  await user.save();
+//                  console.log(`💰 Deducted ₹${deduction} from User ${userId} (Payment: Wallet)`);
+//               }
+
+//               // Emit real-time wallet update to user so UI updates immediately
+//               io.to(userId).emit("walletUpdate", {
+//                 balance: user.wallet || 0,
+//                 wallet: user.wallet || 0
+//               });
+//             }
+//           } catch (walletError) {
+//             console.error("❌ Error syncing wallet in socket:", walletError);
+//           }
+//         }
+
+//         if (userId) {
+//           const userRoom = userId.toString();
+          
+//           // 1. Emit rideCompleted (Main event)
+//           io.to(userRoom).emit("rideCompleted", {
+//             rideId: rideId,
+//             distance: `${distance} km`,
+//             charge: finalFare,
+//             fare: finalFare,
+//             driverName: ride.driverName || "Driver",
+//             vehicleType: ride.rideType || "bike",
+//             timestamp: new Date().toISOString(),
+//             status: "completed"
+//           });
+
+//           // 2. Emit billAlert (CRITICAL: Triggers Bill Modal in User App)
+//           io.to(userRoom).emit("billAlert", {
+//             type: "bill",
+//             rideId: rideId,
+//             distance: `${distance} km`,
+//             fare: finalFare,
+//             driverName: ride.driverName || "Driver",
+//             vehicleType: ride.rideType || "bike",
+//             actualPickup: actualPickup,
+//             actualDrop: actualDrop,
+//             timestamp: new Date().toISOString(),
+//             message: "Ride completed! Here's your bill.",
+//             showBill: true,
+//             priority: "high"
+//           });
+
+//           // 3. Emit rideStatusUpdate (CRITICAL: Updates App State to 'completed')
+//           io.to(userRoom).emit("rideStatusUpdate", {
+//             rideId: rideId,
+//             status: "completed",
+//             newStatus: "completed",
+//             fare: finalFare,
+//             distance: distance,
+//             timestamp: new Date().toISOString(),
+//             message: "Ride completed successfully",
+//             otpVerified: true,
+//             completed: true
+//           });
+//         }
+        
+//         // ✅ CRITICAL: Send success response back to driver
+//         callback?.({ 
+//           success: true, 
+//           message: "Ride completed successfully",
+//           rideId: rideId,
+//           fare: finalFare,
+//           distance: distance,
+//           newWalletBalance: updatedDriver ? updatedDriver.wallet : 0 // ✅ SEND NEW BALANCE TO DRIVER APP
+//         });
+        
+//       } catch (error) {
+//         console.error("Error in driverCompletedRide:", error);
+//         callback?.({ 
+//           success: false, 
+//           message: error.message || "Server error" 
+//         });
 //       }
-//     }
-
-//     if (userId) {
-//       const userRoom = userId.toString();
-      
-//       // 1. Emit rideCompleted (Main event)
-//       io.to(userRoom).emit("rideCompleted", {
-//         rideId: rideId,
-//         distance: `${distance} km`,
-//         charge: finalFare,
-//         fare: finalFare,
-//         driverName: ride.driverName || "Driver",
-//         vehicleType: ride.rideType || "bike",
-//         timestamp: new Date().toISOString(),
-//         status: "completed"
-//       });
-
-//       // 2. Emit billAlert (CRITICAL: Triggers Bill Modal in User App)
-//       io.to(userRoom).emit("billAlert", {
-//         type: "bill",
-//         rideId: rideId,
-//         distance: `${distance} km`,
-//         fare: finalFare,
-//         driverName: ride.driverName || "Driver",
-//         vehicleType: ride.rideType || "bike",
-//         actualPickup: actualPickup,
-//         actualDrop: actualDrop,
-//         timestamp: new Date().toISOString(),
-//         message: "Ride completed! Here's your bill.",
-//         showBill: true,
-//         priority: "high"
-//       });
-
-//       // 3. Emit rideStatusUpdate (CRITICAL: Updates App State to 'completed')
-//       io.to(userRoom).emit("rideStatusUpdate", {
-//         rideId: rideId,
-//         status: "completed",
-//         newStatus: "completed",
-//         fare: finalFare,
-//         distance: distance,
-//         timestamp: new Date().toISOString(),
-//         message: "Ride completed successfully",
-//         otpVerified: true,
-//         completed: true
-//       });
-//     }
-    
-//     // ✅ CRITICAL: Send success response back to driver
-//     callback?.({ 
-//       success: true, 
-//       message: "Ride completed successfully",
-//       rideId: rideId,
-//       fare: finalFare,
-//       distance: distance
 //     });
-    
-//   } catch (error) {
-//     console.error("Error in driverCompletedRide:", error);
-//     callback?.({ 
-//       success: false, 
-//       message: error.message || "Server error" 
-//     });
-//   }
-// });
 
 //     socket.on("driverOffline", async ({ driverId }) => {
 //       try {
@@ -3452,10 +3482,21 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //           await session.commitTransaction();
 //           console.log(`✅ Ride ${rideId} accepted successfully by ${driverId}`);
 
+//           // ✅ UPDATE IN-MEMORY RIDE STATE
+//           if (rides[rideId]) {
+//             rides[rideId].status = "accepted";
+//             rides[rideId].driverId = driverId;
+//             rides[rideId].driverName = driverName;
+//             rides[rideId].acceptedAt = new Date();
+//           }
+
 //           // Get driver's current location
 //           let currentDriverLat = 0;
 //           let currentDriverLng = 0;
 //           let currentVehicleType = "TAXI";
+//           let driverPhone = "";
+//           let driverVehicleNumber = "";
+//           let driverRating = "5.0";
 
 //           // Get from active memory (Fastest & Most Accurate)
 //           if (activeDriverSockets.has(driverId)) {
@@ -3467,30 +3508,53 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //             }
 //           }
 
-//           // If not in memory, try DB
-//           if (currentDriverLat === 0) {
-//             const dbDriver = await Driver.findOne({ driverId });
-//             if (dbDriver) {
-//               currentVehicleType = dbDriver.vehicleType || "TAXI";
-//               if (dbDriver.location && dbDriver.location.coordinates) {
-//                 currentDriverLng = dbDriver.location.coordinates[0];
-//                 currentDriverLat = dbDriver.location.coordinates[1];
-//               }
-//             }
-//           }
-          
-//           // Send coordinates to User App
-//           const userRoom = ride.user.toString();
-//           io.to(userRoom).emit("rideAccepted", {
-//             success: true,
-//             rideId: rideId,
-//             driverId: driverId,
-//             driverName: driverName,
-//             driverLat: currentDriverLat,
-//             driverLng: currentDriverLng,
-//             vehicleType: currentVehicleType,
-//             message: "Ride accepted successfully"
-//           });
+//           const dbDriver = await Driver.findOne({ driverId });
+
+// if (dbDriver) {
+//   driverPhone = dbDriver.phone || "";
+//   driverVehicleNumber = dbDriver.vehicleNumber || "";
+//   driverRating = dbDriver.rating || "5.0";
+//   currentVehicleType = dbDriver.vehicleType || "TAXI";
+
+//   if (dbDriver.location?.coordinates?.length === 2) {
+//     currentDriverLng = dbDriver.location.coordinates[0];
+//     currentDriverLat = dbDriver.location.coordinates[1];
+//   }
+// }
+
+// // ✅ ALWAYS emit to user (outside if)
+// // In the acceptRide function in backend, after updating the ride status:
+// const userRoom = ride.user.toString();
+
+// // Emit to the user's room
+// io.to(userRoom).emit("rideAccepted", {
+//   success: true,
+//   rideId: rideId,
+//   driverId: driverId,
+//   driverName: driverName,
+//   driverLat: currentDriverLat,
+//   driverLng: currentDriverLng,
+//   vehicleType: currentVehicleType,
+//   driverPhone: driverPhone || "",
+//   driverVehicleNumber: driverVehicleNumber || "",
+//   driverRating: driverRating || "5.0",
+//   message: "Ride accepted successfully"
+// });
+
+// // Also emit driver location update
+// io.to(userRoom).emit("driverLiveLocationUpdate", {
+//   driverId: driverId,
+//   lat: currentDriverLat,
+//   lng: currentDriverLng,
+//   status: "onTheWay",
+//   vehicleType: currentVehicleType,
+//   timestamp: Date.now(),
+//   heading: 0,
+//   speed: 0
+// });
+
+// console.log(`📍 Sent driver location to user for ride ${rideId}`);
+
 
           
 //           // ✅ Notify ALL OTHER DRIVERS that this ride is no longer available
@@ -3549,11 +3613,6 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //         } finally {
 //           session.endSession();
 //         }
-
-
-
-
-        
 //       } catch (error) {
 //         console.error(`❌ ERROR ACCEPTING RIDE:`, error);
 //         callback({ success: false, message: error.message });
@@ -3913,162 +3972,6 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //       }
 //     });
 
-//     socket.on("rideCompleted", async (data) => {
-//       try {
-//         const { rideId, driverId, userId, distance, fare, actualPickup, actualDrop } = data;
-        
-//         console.log(`🏁 Ride ${rideId} completed by driver ${driverId}`);
-//         console.log(`💰 Fare: ₹${fare}, Distance: ${distance}km`);
-        
-//         // ✅ FIX 1: Robust DB lookup
-//         let ride;
-//         try {
-//           ride = await Ride.findOne({ RAID_ID: rideId });
-//         } catch (dbError) {
-//           console.error("❌ Error finding ride in DB:", dbError);
-//           return; // Don't proceed if DB fails
-//         }
-        
-//         if (!ride) {
-//           console.log(`❌ Ride ${rideId} not found in DB`);
-//           return;
-//         }
-        
-//         // ✅ FIX 2: Update ride in memory (fixes "No active rides" log)
-//         rides[rideId] = {
-//           ...rides[rideId],
-//           status: 'completed', // ✅ Update status in memory
-//           completedAt: new Date()
-//         };
-        
-//         // Update DB
-//         ride.status = 'completed';
-//         ride.completedAt = new Date();
-//         ride.actualDistance = distance;
-//         ride.actualFare = fare;
-//         ride.actualPickup = actualPickup;
-//         ride.actualDrop = actualDrop;
-//         await ride.save();
-        
-//         console.log(`✅ Ride ${rideId} status updated to 'completed' in DB`);
-        
-//         // Update driver status
-//         await Driver.findOneAndUpdate(
-//           { driverId: driverId },
-//           {
-//             status: 'Live',
-//             lastUpdate: new Date()
-//           }
-//         );
-        
-//         // ✅ FIX 3: Robust User Room resolution
-//         // Try to get userId from ride document, fallback to data, then to string
-//         const targetUserId = ride?.user?.toString() || userId?.toString();
-        
-//         console.log(`📡 Emitting events to User ID: ${targetUserId} (Room)`);
-        
-//         const userRoom = targetUserId;
-
-//         if (userRoom) {
-//           console.log(`📡 Sending ride completion events to user room: ${userRoom}`);
-
-//         // ✅ Event 1: billAlert (CRITICAL: Triggers Bill Modal)
-//         // We send this first to ensure the modal state is set true
-//         io.to(userRoom).emit("billAlert", {
-//           type: "bill",
-//           rideId: rideId,
-//           distance: `${distance} km`,
-//           fare: fare,
-//           driverName: ride?.driverName || "Driver",
-//           vehicleType: ride?.rideType || "bike",
-//           actualPickup: actualPickup,
-//           actualDrop: actualDrop,
-//           timestamp: new Date().toISOString(),
-//           message: "Ride completed! Here's your bill.",
-//           showBill: true,
-//           priority: "high"
-//         });
-//         console.log(`✅ Sent billAlert to user ${userRoom}`);
-
-//         // ✅ Event 2: rideCompleted
-//         // REMOVED status: "completed" to prevent premature navigation away from map
-//         io.to(userRoom).emit("rideCompleted", {
-//           rideId: rideId,
-//           // status: "completed", // ❌ Commented out to prevent UI flickering/hiding
-//           distance: `${distance} km`,
-//           charge: fare,
-//           fare: fare,
-//           driverName: ride?.driverName || "Driver",
-//           vehicleType: ride?.rideType || "bike",
-//           timestamp: new Date().toISOString()
-//         });
-//         console.log(`✅ Sent rideCompleted to user ${userRoom}`);
-
-//           // ✅ Event 3: rideCompletedAlert (for alert popup)
-//           io.to(userRoom).emit("rideCompletedAlert", {
-//             rideId: rideId,
-//             driverName: ride?.driverName || "Driver",
-//             fare: fare,
-//             distance: distance,
-//             message: "Your ride has been completed successfully!",
-//             alertTitle: "✅ Ride Completed",
-//             alertMessage: `Thank you for using our service! Your ride has been completed. Total fare: ₹${fare}`,
-//             showAlert: true,
-//             priority: "high"
-//           });
-//           console.log(`✅ Sent rideCompletedAlert to user ${userRoom}`);
-
-//         // ✅ Event 4: rideStatusUpdate with DELAY
-//         // This ensures the bill modal is visible before the app state changes to 'completed'
-//         setTimeout(() => {
-//           io.to(userRoom).emit("rideStatusUpdate", {
-//             rideId: rideId,
-//             status: "completed",
-//             newStatus: "completed",
-//             fare: fare,
-//             distance: `${distance} km`,
-//             timestamp: new Date().toISOString(),
-//             message: "Ride completed successfully"
-//           });
-//           console.log(`✅ Sent delayed rideStatusUpdate to user ${userRoom}`);
-//         }, 2000); // 2 second delay
-
-//           // ✅ ALSO broadcast to ALL users (in case room doesn't work)
-//           io.emit("rideCompletedBroadcast", {
-//             rideId: rideId,
-//             userId: userRoom,
-//             status: "completed",
-//             fare: fare,
-//             distance: distance,
-//             timestamp: new Date().toISOString()
-//           });
-//           console.log(`✅ Broadcasted ride completion to all clients`);
-
-//           console.log(`✅ All completion events sent to user ${userRoom}`);
-//         } else {
-//           console.error(`❌ Cannot send alerts: userRoom is null/undefined`);
-//         }
-        
-//         // Respond to Driver
-//         socket.emit("rideCompletedSuccess", {
-//           rideId: rideId,
-//           message: "Ride completed successfully",
-//           timestamp: new Date().toISOString()
-//         });
-        
-//         const driverRoom = `driver_${driverId}`;
-//         io.to(driverRoom).emit("paymentStatus", {
-//           rideId: rideId,
-//           status: "pending",
-//           message: "Payment is pending. Please wait for confirmation.",
-//           timestamp: new Date().toISOString()
-//         });
-        
-//       } catch (error) {
-//         console.error("❌ Error processing ride completion:", error);
-//       }
-//     });
-
 //     socket.on("rejectRide", async (data, callback) => {
 //       try {
 //         const { rideId, driverId, reason = "Driver declined" } = data;
@@ -4211,7 +4114,7 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //             driverData.location.latitude,
 //             driverData.location.longitude,
 //             driverData.vehicleType,
-//             "Offline"
+//             "offline"
 //           ).catch(console.error);
 //         }
        
@@ -4243,7 +4146,7 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 //           driver.location.latitude,
 //           driver.location.longitude,
 //           driver.vehicleType,
-//           "Offline"
+//           "offline"
 //         ).catch(console.error);
 //       }
 
@@ -4279,3 +4182,7 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 // };
 
 // module.exports = { init, getIO, broadcastPricesToAllUsers };
+
+
+
+
