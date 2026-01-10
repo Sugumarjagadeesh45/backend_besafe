@@ -99,7 +99,40 @@ app.get('/api/admin/drivers', async (req, res) => {
 });
 
 
-
+// Add this to your app.js
+app.get('/api/drivers/get-vehicle-type/:driverId', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    console.log(`🔍 Fetching vehicle type for driver: ${driverId}`);
+    
+    const Driver = require('./models/driver/driver');
+    const driver = await Driver.findOne({ driverId })
+      .select('vehicleType driverId name');
+    
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        message: 'Driver not found'
+      });
+    }
+    
+    console.log(`✅ Found vehicle type: ${driver.vehicleType} for driver: ${driverId}`);
+    
+    res.json({
+      success: true,
+      vehicleType: driver.vehicleType || 'taxi',
+      driverId: driver.driverId,
+      name: driver.name
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching vehicle type:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch vehicle type'
+    });
+  }
+});
 
 // In app.js - Add this debug endpoint
 app.get('/api/debug/ride/:rideId', async (req, res) => {
@@ -233,7 +266,48 @@ app.post('/api/rides/simple-complete', async (req, res) => {
 });
 
 
+// ✅ GET DRIVER DETAILS BY DRIVER ID
+app.get('/api/drivers/get-details/:driverId', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    
+    console.log(`🔍 Fetching details for driver: ${driverId}`);
+    
+    const Driver = require('./models/driver/driver');
+    const driver = await Driver.findOne({ driverId })
+      .select('driverId name phone phoneNumber mobile vehicleType vehicleNumber rating')
+      .lean();
 
+    if (!driver) {
+      return res.status(404).json({
+        success: false,
+        message: "Driver not found"
+      });
+    }
+
+    console.log(`✅ Driver details found: ${driver.name}, Phone: ${driver.phone || driver.phoneNumber}`);
+    
+    res.json({
+      success: true,
+      driver: {
+        driverId: driver.driverId,
+        name: driver.name,
+        phone: driver.phone || driver.phoneNumber || driver.mobile || '',
+        vehicleType: driver.vehicleType,
+        vehicleNumber: driver.vehicleNumber,
+        rating: driver.rating
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting driver details:', error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get driver details",
+      error: error.message
+    });
+  }
+});
 
 // ✅ Direct driver wallet update endpoint
 app.put('/api/admin/direct-wallet/:driverId', async (req, res) => {

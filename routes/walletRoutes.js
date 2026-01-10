@@ -16,7 +16,7 @@ router.get('/balance', (req, res) => {
 
 
 // In your backend (e.g., walletRoutes.js)
-router.post('/credit-ride', authenticate, async (req, res) => {
+router.post('/credit-ride', authMiddleware, async (req, res) => {
   try {
     const { rideId, amount, userId } = req.body;
     

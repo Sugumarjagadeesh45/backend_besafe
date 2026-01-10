@@ -661,91 +661,85 @@ const init = (server) => {
       }
     });
 
-    socket.on("registerDriver", async ({ driverId, driverName, latitude, longitude, vehicleType = "taxi" }) => {
-      try {
-        const normalizedVehicleType = (vehicleType || 'taxi').toLowerCase();  // ✅ Changed to lowercase
+    
+    socket.on("registerDriver", async ({ driverId, driverName, latitude, longitude, vehicleType }) => {
+  try {
+    console.log(`📝 DRIVER REGISTRATION REQUEST: ${driverName} (${driverId})`);
+    console.log(`   - Frontend sent vehicleType: ${vehicleType || 'not provided'}`);
 
-        console.log(`📝 DRIVER REGISTRATION REQUEST: ${driverName} (${driverId})`);
-        console.log(`   - Frontend sent vehicleType: ${vehicleType}`);
-        console.log(`   - Normalized: ${normalizedVehicleType}`);
+    // ✅ CRITICAL: Get ACTUAL vehicle type from database
+    const driver = await Driver.findOne({ driverId });
+    
+    let actualVehicleType = 'taxi'; // Default fallback
+    
+    if (driver) {
+      actualVehicleType = driver.vehicleType || 'taxi';
+      console.log(`   - Database vehicleType: ${actualVehicleType}`);
+    } else {
+      console.log(`   - Driver not found in DB, using frontend type: ${vehicleType || 'taxi'}`);
+      actualVehicleType = vehicleType || 'taxi';
+    }
+    
+    // Normalize to lowercase
+    actualVehicleType = actualVehicleType.toLowerCase();
+    console.log(`   - FINAL vehicleType: ${actualVehicleType}`);
 
-        // Fetch driver from database to get their ACTUAL vehicle type
-        const driver = await Driver.findOne({ driverId });
+    // ✅ CRITICAL FIX: ALWAYS use DB vehicle type, never frontend type
+    activeDriverSockets.set(driverId, {
+      driverId,
+      driverName,
+      location: { latitude, longitude },
+      vehicleType: actualVehicleType,  // ✅ Always use DB type
+      status: 'Live',
+      socketId: socket.id,
+      lastUpdate: Date.now(),
+      isOnline: true
+    });
 
-        if (!driver) {
-          console.error(`❌ Driver ${driverId} not found in database!`);
-        } else {
-          console.log(`   - Database vehicleType: ${driver.vehicleType}`);
-        }
+    // ✅ Join vehicle-specific room
+    const vehicleRoom = `drivers_${actualVehicleType}`;
+    socket.join(vehicleRoom);
+    console.log(`🚪 Driver ${driverId} joined room: ${vehicleRoom}`);
 
-        const actualVehicleType = driver ? driver.vehicleType : normalizedVehicleType;
-        console.log(`   - ACTUAL vehicleType used: ${actualVehicleType}`);
-
-        // ✅ CRITICAL FIX: Set driver as online immediately when registering
-        activeDriverSockets.set(driverId, {
-          driverId,
-          driverName,
-          location: { latitude, longitude },
-          vehicleType: actualVehicleType,  // ✅ Use actual vehicle type from DB
+    // Update database status
+    await Driver.findOneAndUpdate(
+      { driverId },
+      {
+        $set: {
           status: 'Live',
-          socketId: socket.id,
-          lastUpdate: Date.now(),
-          isOnline: true
-        });
-        // ✅ Update database with Live status
-        const driverUpdate = {
-          driverId,
-          name: driverName,
-          vehicleType: normalizedVehicleType,
-          status: 'Live', // ✅ Changed from 'offline' to 'Live'
-          lastUpdate: new Date(),
           location: {
             type: 'Point',
             coordinates: [longitude, latitude]
-          }
-        };
-        // ✅ CRITICAL FIX: Join vehicle-specific room for targeted ride requests
-        const vehicleRoom = `drivers_${actualVehicleType}`;
-        socket.join(vehicleRoom);
-        console.log(`🚪 Driver ${driverId} (${actualVehicleType}) joined room: ${vehicleRoom}`);
-
-        // ✅ CRITICAL FIX: NEVER update vehicleType - it's immutable after admin sets it
-        await Driver.findOneAndUpdate(
-          { driverId },
-          {
-            $set: {
-              status: 'Live',
-              location: {
-                type: 'Point',
-                coordinates: [longitude, latitude]
-              },
-              lastUpdate: new Date()
-            }
-            // ❌ Removed: vehicleType - NEVER modified after admin registration
           },
-          { new: true }
-        );
-        
-        console.log(`✅ Driver ${driverId} registered as ${actualVehicleType} (status: Live)`);
+          lastUpdate: new Date()
+        }
+        // ❌ NEVER update vehicleType here - it's set by admin only
+      },
+      { new: true }
+    );
 
-        // ✅ BROADCAST this driver's location to ALL users immediately
-        io.emit("driverLocationsUpdate", {
-          drivers: [{
-            driverId,
-            name: driverName,
-            location: {
-              coordinates: [longitude, latitude]
-            },
-            vehicleType: actualVehicleType,  // ✅ Use actual vehicle type from DB
-            status: 'Live',
-            lastUpdate: Date.now()
-          }]
-        });
-        
-      } catch (error) {
-        console.error("❌ Error registering driver:", error);
-      }
+    console.log(`✅ Driver ${driverId} registered as ${actualVehicleType} (status: Live)`);
+
+    // ✅ Broadcast this driver's location to ALL users immediately
+    io.emit("driverLocationsUpdate", {
+      drivers: [{
+        driverId,
+        name: driverName,
+        location: {
+          coordinates: [longitude, latitude]
+        },
+        vehicleType: actualVehicleType,
+        status: 'Live',
+        lastUpdate: Date.now()
+      }]
     });
+    
+  } catch (error) {
+    console.error("❌ Error registering driver:", error);
+  }
+});
+
+
 
     socket.on("driverGoOnline", async ({ driverId, latitude, longitude, vehicleType }) => {
       try {
@@ -938,6 +932,12 @@ const init = (server) => {
           distance: distance,
           newWalletBalance: updatedDriver ? updatedDriver.wallet : 0 // ✅ SEND NEW BALANCE TO DRIVER APP
         });
+        
+        // ✅ CLEANUP: Remove ride from memory after completion to prevent memory leak
+        if (rides[rideId]) {
+          delete rides[rideId];
+          console.log(`🧹 Removed ride ${rideId} from memory (completed)`);
+        }
         
       } catch (error) {
         console.error("Error in driverCompletedRide:", error);
@@ -1236,12 +1236,7 @@ const init = (server) => {
         console.log(`✅ Marked ride ${rideId} as emitted at ${now}`);
 
         // Clean up old entries after 1 minute to prevent memory leak
-        setTimeout(() => {
-          const removed = recentRideEmissions.delete(rideId);
-          if (removed) {
-            console.log(`🧹 Cleaned up dedup entry for ride ${rideId}`);
-          }
-        }, 60000);
+        // Cleanup handled by global interval to reduce timer overhead
 
         // ✅ CRITICAL FIX: Only emit to drivers with matching vehicle type
         // Use room-based filtering instead of broadcasting to everyone
@@ -1409,6 +1404,49 @@ socket.on("acceptRide", async (data, callback) => {
       // Get driver details from database
       const driver = await Driver.findOne({ driverId: driverId });
       
+
+
+
+         let userDataComplete = null;
+    let retryCount = 0;
+    
+    while (!userDataComplete && retryCount < 3) {
+      try {
+        // Get user from ride (populated earlier)
+        if (updatedRide.user) {
+          userDataComplete = {
+            name: updatedRide.name || "Customer",
+            mobile: updatedRide.userMobile || updatedRide.user?.phoneNumber || "",
+            userId: updatedRide.user._id || updatedRide.user,
+            // Add location for driver's map
+            location: {
+              latitude: updatedRide.pickup?.lat || 0,
+              longitude: updatedRide.pickup?.lng || 0
+            }
+          };
+        }
+      } catch (err) {
+        retryCount++;
+        if (retryCount === 3) {
+          console.error("Failed to get user data after 3 retries:", err);
+          // Create fallback user data
+          userDataComplete = {
+            name: updatedRide.name || "Customer",
+            mobile: updatedRide.userMobile || "N/A",
+            userId: updatedRide.user?._id || "unknown",
+            location: {
+              latitude: updatedRide.pickup?.lat || 0,
+              longitude: updatedRide.pickup?.lng || 0
+            }
+          };
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    
+
+
+
       // Prepare complete response data
       const responseData = {
         success: true,
@@ -1660,62 +1698,81 @@ socket.on("acceptRide", async (data, callback) => {
       }
     });
 
-    socket.on("getUserDataForDriver", async (data, callback) => {
-      try {
-        const { rideId } = data;
-       
-        console.log(`👤 Driver requested user data for ride: ${rideId}`);
-       
-         const driverRoom = `driver_${driverId}`;
-    io.to(driverRoom).emit("driverDataResponse", userData);
-    io.to(rideId).emit("driverDataResponse", userData);
 
-
-        const ride = await Ride.findOne({ RAID_ID: rideId }).populate('user');
-        if (!ride) {
-          if (typeof callback === "function") {
-            callback({ success: false, message: "Ride not found" });
-          }
-          return;
-        }
-       
-        let userCurrentLocation = null;
-        if (userLocationTracking.has(ride.user.toString())) {
-          const userLoc = userLocationTracking.get(ride.user.toString());
-          userCurrentLocation = {
-            latitude: userLoc.latitude,
-            longitude: userLoc.longitude
-          };
-        }
-       
-        const userData = {
-          success: true,
-          rideId: ride.RAID_ID,
-          userId: ride.user?._id || ride.user,
-          userName: ride.name || "Customer",
-          userMobile: rides[rideId]?.userMobile || ride.userMobile || ride.user?.phoneNumber || "N/A",
-          userPhoto: ride.user?.profilePhoto || null,
-          pickup: ride.pickup,
-          drop: ride.drop,
-          userCurrentLocation: userCurrentLocation,
-          otp: ride.otp,
-          fare: ride.fare,
-          distance: ride.distance
-        };
-       
-        console.log(`📤 Sending user data to driver for ride ${rideId}`);
-       
-        if (typeof callback === "function") {
-          callback(userData);
-        }
-       
-      } catch (error) {
-        console.error("❌ Error getting user data for driver:", error);
-        if (typeof callback === "function") {
-          callback({ success: false, message: error.message });
-        }
-      }
+    
+    // In your socket.js file, find the handler around line 1707:
+socket.on("getUserDataForDriver", async (data) => {
+  try {
+    console.log('👤 Driver requested user data for ride:', data.rideId);
+    
+    // FIX: Use data.driverId instead of undefined driverId variable
+    const driverId = data.driverId; // Add this line
+    const rideId = data.rideId;
+    
+    if (!driverId) {
+      console.error('❌ No driverId provided in getUserDataForDriver');
+      return socket.emit("userDataResponse", {
+        success: false,
+        message: "Driver ID is required"
+      });
+    }
+    
+    // Now you can use driverId safely
+    console.log(`🔍 Fetching user data for driver ${driverId}, ride ${rideId}`);
+    
+    const Driver = require('./models/driver/driver');
+    const Ride = require('./models/ride');
+    
+    // Find the ride
+    const ride = await Ride.findOne({ RAID_ID: rideId });
+    if (!ride) {
+      console.error(`❌ Ride ${rideId} not found`);
+      return socket.emit("userDataResponse", {
+        success: false,
+        message: "Ride not found"
+      });
+    }
+    
+    // Find the user
+    const Registration = require("./models/user/Registration");
+    const user = await Registration.findById(ride.user);
+    
+    if (!user) {
+      console.error(`❌ User not found for ride ${rideId}`);
+      return socket.emit("userDataResponse", {
+        success: false,
+        message: "User not found"
+      });
+    }
+    
+    // Get driver details to include mobile number
+    const driver = await Driver.findOne({ driverId: driverId });
+    const driverMobile = driver ? (driver.phone || driver.phoneNumber || driver.mobile || '') : '';
+    
+    console.log(`✅ Sending user data to driver ${driverId}: ${user.name}, Phone: ${user.phoneNumber}`);
+    
+    socket.emit("userDataResponse", {
+      success: true,
+      userId: user._id,
+      customerId: user.customerId,
+      userName: user.name,
+      userPhone: user.phoneNumber,
+      userMobile: user.phoneNumber,
+      pickupAddress: ride.pickupAddress,
+      dropoffAddress: ride.dropoffAddress,
+      estimatedFare: ride.estimatedFare,
+      driverMobile: driverMobile // Include driver's mobile number
     });
+    
+  } catch (error) {
+    console.error('❌ Error getting user data for driver:', error);
+    socket.emit("userDataResponse", {
+      success: false,
+      message: "Error fetching user data",
+      error: error.message
+    });
+  }
+});
 
     socket.on("otpVerified", async (data) => {
       try {
@@ -2072,7 +2129,22 @@ socket.on("acceptRide", async (data, callback) => {
       }
     });
    
+    // ✅ NEW: Cleanup stale rides from memory (older than 3 hours)
+    const threeHoursAgo = now - (3 * 60 * 60 * 1000);
+    Object.keys(rides).forEach(rideId => {
+      if (rides[rideId].timestamp < threeHoursAgo) {
+        delete rides[rideId];
+        cleanedCount++;
+        console.log(`🧹 Removed stale ride ${rideId} from memory (timeout)`);
+      }
+    });
 
+    // ✅ NEW: Cleanup recentRideEmissions map centrally
+    for (const [rideId, timestamp] of recentRideEmissions.entries()) {
+      if (timestamp < oneMinuteAgo) {
+        recentRideEmissions.delete(rideId);
+      }
+    }
     
     if (cleanedCount > 0) {
       console.log(`\n🧹 Cleaned up ${cleanedCount} stale entries`);
@@ -4183,7 +4255,3 @@ module.exports = { init, getIO, broadcastPricesToAllUsers };
 // };
 
 // module.exports = { init, getIO, broadcastPricesToAllUsers };
-
-
-
-
