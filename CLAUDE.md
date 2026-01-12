@@ -19,7 +19,7 @@ This is a **Taxi + Grocery Delivery Backend** built with Node.js, Express, Mongo
 # Install dependencies
 npm install
 
-# Start the server
+# Start the server (production)
 npm start
 
 # Development server (default port 5001)
@@ -35,7 +35,21 @@ The server will:
 **Required environment variables:**
 - `MONGODB_URI` - MongoDB connection string
 - `JWT_SECRET` - Secret for JWT token signing
-- Firebase credentials (see `.env` for details)
+- `PORT` - Server port (default: 5001)
+- Firebase credentials (see `.env` for details):
+  - `FIREBASE_PROJECT_ID`
+  - `FIREBASE_PRIVATE_KEY`
+  - `FIREBASE_CLIENT_EMAIL`
+- `GOOGLE_API_KEY` - For geocoding/location services
+
+**Testing the Server:**
+```bash
+# Check if server is running
+curl http://localhost:5001/api/test-connection
+
+# Test with ngrok (bypasses browser warning)
+curl -H "ngrok-skip-browser-warning: true" http://your-ngrok-url/api/test-connection
+```
 
 ## Architecture Overview
 
@@ -84,13 +98,23 @@ Located in `services/workingHoursService.js` - Manages driver working time limit
 - Auto-stop functionality after timer expires
 - Extension purchase system (₹50 for half time, ₹100 for full time)
 - Wallet integration for automatic deductions
+- **₹100 shift start fee** deducted when driver goes online (new shift only)
 
 **Key endpoints:**
-- `/api/drivers/working-hours/start` - Start timer when driver goes online
-- `/api/drivers/working-hours/stop` - Stop timer when driver goes offline
-- `/api/drivers/working-hours/extend` - Purchase extended hours
-- `/api/drivers/working-hours/add-half-time` - Add half time (based on shift config)
-- `/api/drivers/working-hours/add-full-time` - Add full time (based on shift config)
+- `/api/drivers/working-hours/start` - Start timer when driver goes online (₹100 deducted for new shifts)
+- `/api/drivers/working-hours/stop` - Stop timer when driver goes offline (no deduction)
+- `/api/drivers/working-hours/pause` - Pause timer temporarily
+- `/api/drivers/working-hours/resume` - Resume paused timer (no deduction)
+- `/api/drivers/working-hours/extend` - Purchase extended hours (₹100)
+- `/api/drivers/working-hours/add-half-time` - Add half time (₹50 for 12h, ₹100 for 24h)
+- `/api/drivers/working-hours/add-full-time` - Add full time (₹100 for 12h, ₹200 for 24h)
+- `/api/drivers/working-hours/status/:driverId` - Get current timer status
+
+**See WALLET_DEBIT.md** for comprehensive wallet deduction documentation including:
+- All auto-debit triggers and amounts
+- Resume vs new shift detection logic
+- Transaction record creation
+- Testing procedures
 
 ### Real-Time Features (Socket.IO)
 
@@ -270,11 +294,23 @@ io.to(userId).emit('rideCompleted', { /* WITHOUT status field */ });
 
 Emitting in wrong order or including `status: 'completed'` in `rideCompleted` causes premature navigation before bill display.
 
-### Socket.IO Room Naming
+### Socket.IO Configuration
 
+**Server Configuration** (`socket.js`):
+- CORS enabled for all origins (development mode)
+- Transports: WebSocket and polling
+- Ping timeout: 60 seconds
+- Ping interval: 25 seconds
+
+**Room Naming Conventions:**
 - Driver rooms: `driver_${driverId}`
 - User rooms: User's MongoDB `_id` as string
 - Broadcast to specific vehicle types: Individual emission to driver rooms, NOT to `allDrivers`
+
+**Connection Requirements:**
+- Drivers must emit `driverOnline` event with `driverId` after connecting
+- Users connect automatically when requesting rides
+- All real-time location updates use Socket.IO, not REST APIs
 
 ### MongoDB Schema Considerations
 
@@ -298,8 +334,15 @@ Many critical admin operations are defined directly in `app.js` before route loa
 - Driver status toggles
 - Simple ride completion
 - Admin driver listing
+- Working hours management (start, stop, pause, resume, extend)
 
-Check `app.js` first before modifying routes for admin operations.
+Check `app.js` first before modifying routes for admin operations. The file contains 1300+ lines with direct endpoint implementations for critical operations that need quick access or special handling.
+
+**Why some endpoints are in app.js instead of routes:**
+- Performance-critical operations (wallet, status changes)
+- Operations requiring immediate IO instance access
+- Fallback implementations during route refactoring
+- Direct admin operations that bypass middleware chains
 
 ### Testing Vehicle Type Filtering
 
@@ -338,14 +381,41 @@ Prices are cached in-memory for performance:
 ## Testing & Debugging
 
 **Test Endpoints:**
-- `/api/test-connection` - Verify API is live
-- `/api/test-drivers` - List all drivers grouped by vehicle type
-- `/api/orders/test-connection` - Verify order routes
+```bash
+# Verify API is live
+curl http://localhost:5001/api/test-connection
+
+# List all drivers grouped by vehicle type
+curl http://localhost:5001/api/test-drivers
+
+# Verify order routes
+curl http://localhost:5001/api/orders/test-connection
+
+# Debug vehicle type statistics
+curl http://localhost:5001/api/debug/vehicle-types
+
+# Group drivers by vehicle type (with auth)
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  http://localhost:5001/api/debug/drivers-by-vehicle
+```
+
+**Testing with Postman/Thunder Client:**
+- Import endpoints from routes files
+- Use `ngrok-skip-browser-warning: true` header for ngrok URLs
+- JWT tokens expire after 30 days
+- Admin tokens are separate from driver/user tokens
 
 **Logging:**
 - Morgan middleware logs all HTTP requests
 - Extensive console logging with emoji prefixes (🚗, ✅, ❌, 💰, etc.)
 - Check working hours timer logs for driver session management
+- Socket.IO events are logged with connection/disconnection details
+
+**Common Debug Scenarios:**
+1. **Ride not reaching drivers**: Check vehicle type matches, driver status is "Live", and FCM tokens are valid
+2. **Timer not working**: Verify `workingHoursService.init(io)` called in server.js
+3. **Wallet not deducting**: Check `Transaction` model records and console logs for wallet operations
+4. **Socket events not received**: Verify driver joined room with `driverOnline` event
 
 ## Firebase Cloud Messaging (FCM)
 
@@ -368,3 +438,51 @@ Prices are cached in-memory for performance:
 5. **Working Hours Timer** - Must be stopped/paused when driver goes offline to prevent incorrect deductions
 6. **Socket.IO initialization** - `socket.init(server)` must be called before any socket operations
 7. **Uploads Directory** - Served statically at `/uploads`, created automatically on startup
+8. **CORS Configuration** - Allows all origins with `ngrok-skip-browser-warning` header support for testing
+9. **Resume vs New Shift** - System detects resume scenarios to prevent double-charging drivers
+10. **FCM Token Management** - Driver FCM tokens updated via `/api/drivers/fcm-token`, NOT during status changes
+
+## Current State & Recent Changes
+
+**Note:** There are uncommitted changes in the working directory:
+
+Modified files:
+- `app.js` - CORS configuration updates (added ngrok-skip-browser-warning support)
+- `controllers/rideController.js` - New endpoints for ride and user data retrieval, user location saving
+- `socket.js` - Socket.IO CORS configuration updates
+
+**Recent improvements:**
+1. Enhanced CORS support for ngrok testing
+2. Added `getRideWithUserData` endpoint for complete ride information
+3. Added `getUserById` endpoint for user profile retrieval
+4. Added `saveUserLocation` endpoint for tracking user locations during rides
+5. Updated Socket.IO configuration for better development experience
+
+These changes are working but not yet committed. When making new changes, be aware of these modifications.
+
+## Related Documentation
+
+- **driver_app_controller.md** - **🚗 DRIVER APP FRONTEND GUIDE**
+  - All REST API endpoints with examples
+  - Socket.IO integration patterns
+  - Authentication flow
+  - Working hours & wallet management
+  - Ride lifecycle implementation
+  - FCM token handling
+  - Common issues & solutions
+  - **Use this for driver mobile app development**
+
+- **WALLET_DEBIT.md** - Comprehensive guide to driver wallet auto-debit system
+  - Shift start fees
+  - Auto-debit triggers and flows
+  - Transaction record formats
+  - Testing checklists
+
+- **ride_booking_note.md** - Additional ride booking implementation notes
+- **ride_complete_wallete.md** - Ride completion and wallet credit flows
+
+---
+
+**Last Updated:** 2026-01-12
+**Backend Version:** 1.0.0
+**Documentation Status:** Active Development

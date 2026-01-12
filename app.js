@@ -1,10 +1,12 @@
 require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
+
 const path = require("path");
 const fs = require("fs");
+const cors = require("cors");
 const morgan = require("morgan");
 const jwt = require("jsonwebtoken");
+
 
 // ✅ INITIALIZE APP
 const app = express();
@@ -15,15 +17,15 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ✅ FIXED CORS CONFIGURATION
 console.log("🔧 Setting up CORS...");
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3001", "*"],
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
   credentials: true,
-  exposedHeaders: ["Content-Length", "Content-Type", "Authorization"]
+  maxAge: 86400
 }));
 
 
-
+app.options(/(.*)/, cors());
 
 
 // ✅ MIDDLEWARE

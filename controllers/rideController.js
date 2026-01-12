@@ -26,6 +26,75 @@ exports.userAuth = (req, res, next) => {
   }
 };
 
+
+// ridesController.js - Add this endpoint
+const getRideWithUserData = async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    
+    const ride = await Ride.findOne({ RAID_ID: rideId })
+      .populate('user', 'name phoneNumber customerId')
+      .lean();
+    
+    if (!ride) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Ride not found" 
+      });
+    }
+
+    // Format complete data
+    const responseData = {
+      success: true,
+      ride: {
+        ...ride,
+        userName: ride.name || (ride.user?.name || "Customer"),
+        userMobile: ride.userMobile || (ride.user?.phoneNumber || "N/A"),
+        userId: ride.user?._id || ride.user,
+        customerId: ride.customerId || ride.user?.customerId
+      }
+    };
+
+    res.json(responseData);
+  } catch (error) {
+    console.error("Error fetching ride with user data:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// usersController.js - Add this endpoint
+const getUserById = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await Registration.findById(userId)
+      .select('name phoneNumber customerId profilePicture')
+      .lean();
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        name: user.name,
+        phoneNumber: user.phoneNumber,
+        customerId: user.customerId,
+        profilePicture: user.profilePicture
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+
 // Create ride from socket
 exports.createRideFromSocket = async (io, rideData) => {
   try {
@@ -406,6 +475,55 @@ const otp = rideData.customerId.slice(-4); // This should be LAST 4 digits
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+
+// Add this to your userController.js or rideController.js
+exports.saveUserLocation = async (req, res) => {
+  try {
+    const { userId, rideId, latitude, longitude } = req.body;
+    
+    console.log(`📍 Saving user location: User ${userId}, Ride ${rideId}, ${latitude}, ${longitude}`);
+    
+    // Save to UserLocation model
+    const userLocation = new UserLocation({
+      userId,
+      rideId,
+      latitude,
+      longitude,
+      timestamp: new Date()
+    });
+    
+    await userLocation.save();
+    
+    // Update ride with current location
+    await Ride.findOneAndUpdate(
+      { RAID_ID: rideId },
+      { 
+        $set: { 
+          userCurrentLocation: { latitude, longitude },
+          lastLocationUpdate: new Date()
+        }
+      }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: 'Location saved successfully',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error saving user location:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
+
 
 // Mark Arrived
 exports.markArrived = async (req, res) => {
