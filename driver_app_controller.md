@@ -1,8 +1,5 @@
 
 
-
-
-
 # DRIVER_APP_CONTROLLER.md
 
 This file provides essential endpoints, configurations, and implementation notes for the **Driver Mobile App Frontend**. Use this as a reference when building or troubleshooting the driver application.
