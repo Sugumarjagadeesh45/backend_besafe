@@ -336,7 +336,7 @@ Many critical admin operations are defined directly in `app.js` before route loa
 - Admin driver listing
 - Working hours management (start, stop, pause, resume, extend)
 
-Check `app.js` first before modifying routes for admin operations. The file contains 1300+ lines with direct endpoint implementations for critical operations that need quick access or special handling.
+Check `app.js` first before modifying routes for admin operations. The file contains 2400+ lines with direct endpoint implementations for critical operations that need quick access or special handling.
 
 **Why some endpoints are in app.js instead of routes:**
 - Performance-critical operations (wallet, status changes)
@@ -442,24 +442,6 @@ curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
 9. **Resume vs New Shift** - System detects resume scenarios to prevent double-charging drivers
 10. **FCM Token Management** - Driver FCM tokens updated via `/api/drivers/fcm-token`, NOT during status changes
 
-## Current State & Recent Changes
-
-**Note:** There are uncommitted changes in the working directory:
-
-Modified files:
-- `app.js` - CORS configuration updates (added ngrok-skip-browser-warning support)
-- `controllers/rideController.js` - New endpoints for ride and user data retrieval, user location saving
-- `socket.js` - Socket.IO CORS configuration updates
-
-**Recent improvements:**
-1. Enhanced CORS support for ngrok testing
-2. Added `getRideWithUserData` endpoint for complete ride information
-3. Added `getUserById` endpoint for user profile retrieval
-4. Added `saveUserLocation` endpoint for tracking user locations during rides
-5. Updated Socket.IO configuration for better development experience
-
-These changes are working but not yet committed. When making new changes, be aware of these modifications.
-
 ## Related Documentation
 
 - **driver_app_controller.md** - **🚗 DRIVER APP FRONTEND GUIDE**
@@ -472,6 +454,22 @@ These changes are working but not yet committed. When making new changes, be awa
   - Common issues & solutions
   - **Use this for driver mobile app development**
 
+- **screen_freeze_solution.md** - **📱 DRIVER APP OTP FIX**
+  - Complete OTP verification flow
+  - Immediate screen refresh after Firebase OTP
+  - Backend API endpoints and integration
+  - React Native implementation guide
+  - Testing procedures and checklist
+  - **Use this to fix driver app screen freeze after OTP**
+
+- **grocery_order_fix.md** - **🛒 GROCERY ORDER CREATION FIX**
+  - Fixes "Order validation failed: user: Path `user` is required" error
+  - Backend implementation with both user ObjectId and customerId
+  - Frontend BuyNow.tsx complete implementation
+  - Data flow and debugging guide
+  - Testing procedures and common mistakes
+  - **Use this to fix grocery order 500 errors**
+
 - **WALLET_DEBIT.md** - Comprehensive guide to driver wallet auto-debit system
   - Shift start fees
   - Auto-debit triggers and flows
@@ -483,6 +481,6 @@ These changes are working but not yet committed. When making new changes, be awa
 
 ---
 
-**Last Updated:** 2026-01-12
+**Last Updated:** 2026-01-13
 **Backend Version:** 1.0.0
 **Documentation Status:** Active Development

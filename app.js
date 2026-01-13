@@ -1899,10 +1899,21 @@ app.post(['/api/orders/create', '/api/orders/place-order', '/api/orders'], async
 
     // 3. Get Order Data
     const { products, totalAmount, deliveryAddress, paymentMethod } = req.body;
-    
+
     if (!products || !Array.isArray(products) || products.length === 0) {
       return res.status(400).json({ success: false, error: "No products provided" });
     }
+
+    // ✅ Calculate order totals
+    const subtotal = products.reduce((total, item) => {
+      const price = parseFloat(item.price) || 0;
+      const quantity = parseInt(item.quantity) || 1;
+      return total + (price * quantity);
+    }, 0);
+
+    const tax = subtotal * 0.08; // 8% tax
+    const shipping = subtotal > 499 ? 0 : 5.99; // Free shipping over ₹499
+    const calculatedTotal = subtotal + tax + shipping;
 
     // 4. Generate Order ID
     const Counter = require("./models/user/customerId");
@@ -1924,23 +1935,35 @@ app.post(['/api/orders/create', '/api/orders/place-order', '/api/orders'], async
     const Order = require('./models/Order');
     const newOrder = new Order({
       orderId,
+      user: user._id,  // ✅ FIXED: Changed from userId to user (MongoDB ObjectId)
       customerId: user.customerId || "N/A",
       customerName: user.name,
       customerPhone: user.phoneNumber,
-      customerEmail: user.email,
+      customerEmail: user.email || '',
       customerAddress: user.address,
-      userId: user._id,
       products: products,
-      totalAmount,
-      deliveryAddress: deliveryAddress || user.address,
+      totalAmount: totalAmount || calculatedTotal,
+      subtotal: subtotal,
+      tax: tax,
+      shipping: shipping,
+      deliveryAddress: deliveryAddress || {
+        name: user.name,
+        phone: user.phoneNumber,
+        addressLine1: user.address,
+        city: 'Unknown City',
+        state: 'Unknown State',
+        pincode: '000000',
+        country: 'India'
+      },
       paymentMethod: paymentMethod || 'COD',
       status: 'order_confirmed',
-      orderDate: new Date(),
-      createdAt: new Date()
+      orderDate: new Date()
     });
 
     await newOrder.save();
-    console.log(`✅ DIRECT ORDER: Order ${orderId} created successfully`);
+    console.log(`✅ DIRECT ORDER: Order ${orderId} created successfully!`);
+    console.log(`   User: ${user.name} (CustomerId: ${user.customerId})`);
+    console.log(`   Total: ₹${newOrder.totalAmount} (Subtotal: ₹${subtotal}, Tax: ₹${tax}, Shipping: ₹${shipping})`);
 
     // 6. Notify Admin via Socket
     const io = req.app.get('io');
