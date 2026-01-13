@@ -905,6 +905,7 @@ const init = (server) => {
           { new: true } // ✅ Return updated document to get new balance
         );
 
+        
         // Get user ID from ride
         const userId = ride.user?.toString() || ride.userId;
         
